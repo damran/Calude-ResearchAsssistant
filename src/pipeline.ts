@@ -250,7 +250,9 @@ async function refinePlanStage(
 const RESEARCH_SYSTEM =
   "You are a research worker investigating ONE subtopic. Gather facts from the sources you are given. " +
   "Prefer primary and authoritative sources, note dates, and flag where sources disagree. " +
-  "Be concise and factual. Every nontrivial claim must cite a real source — never invent sources.";
+  "Be concise and factual. Every nontrivial claim must cite a real source — never invent sources. " +
+  "IMPORTANT: you have a limited number of turns. Do NOT spend all turns searching — after 2-3 searches, " +
+  "write your findings brief immediately. It is better to deliver partial findings than to run out of turns.";
 
 async function researchWorker(
   goal: string,
@@ -260,31 +262,40 @@ async function researchWorker(
   emit: Emit,
 ): Promise<{ text: string; res: AgentResult }> {
   emit({ type: "worker", ts: now(), stage: "research", index, label: sub.title, state: "start" });
-  const res = await runAgent({
-    model: config.models.research,
-    systemPrompt: RESEARCH_SYSTEM,
-    allowedTools: ctx.researchTools,
-    cwd: ctx.cwd,
-    maxTurns: clamp(config.researchMaxTurns, 2, 20),
-    prompt:
-      `Overall goal (for context only):\n${goal}\n\n` +
-      `Your subtopic: ${sub.title}\nQuestion: ${sub.question}\n\n` +
-      `${ctx.sourcesGuidance}${ctx.localContext}\n` +
-      `Then write a findings brief in markdown:\n` +
-      `- 3 to 8 bullet points of concrete findings, each ${ctx.citationHint}\n` +
-      `- then a "Sources:" line listing what you used\n` +
-      `Do not fabricate sources. If evidence is thin or conflicting, say so.`,
-    onActivity: (a) =>
-      emit({
-        type: "worker",
-        ts: now(),
-        stage: "research",
-        index,
-        label: sub.title,
-        state: "activity",
-        detail: `${a.tool}${a.detail ? ": " + a.detail.slice(0, 100) : ""}`,
-      }),
-  });
+  let res: AgentResult;
+  try {
+    res = await runAgent({
+      model: config.models.research,
+      systemPrompt: RESEARCH_SYSTEM,
+      allowedTools: ctx.researchTools,
+      cwd: ctx.cwd,
+      maxTurns: clamp(config.researchMaxTurns, 2, 20),
+      prompt:
+        `Overall goal (for context only):\n${goal}\n\n` +
+        `Your subtopic: ${sub.title}\nQuestion: ${sub.question}\n\n` +
+        `${ctx.sourcesGuidance}${ctx.localContext}\n` +
+        `Write a findings brief in markdown after no more than 3 searches:\n` +
+        `- 3 to 8 bullet points of concrete findings, each ${ctx.citationHint}\n` +
+        `- then a "Sources:" line listing what you used\n` +
+        `Do not fabricate sources. If evidence is thin or conflicting, say so. ` +
+        `Write your brief as soon as you have enough data — do not wait.`,
+      onActivity: (a) =>
+        emit({
+          type: "worker",
+          ts: now(),
+          stage: "research",
+          index,
+          label: sub.title,
+          state: "activity",
+          detail: `${a.tool}${a.detail ? ": " + a.detail.slice(0, 100) : ""}`,
+        }),
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    emit({ type: "worker", ts: now(), stage: "research", index, label: sub.title, state: "done", detail: "(error)" });
+    const empty: AgentResult = { text: "", ok: false, subtype: "error", usage: {}, costUsd: 0, model: config.models.research };
+    return { text: `_Worker error for "${sub.title}": ${msg.slice(0, 300)}_`, res: empty };
+  }
   emit({
     type: "worker",
     ts: now(),
@@ -294,7 +305,7 @@ async function researchWorker(
     state: "done",
     detail: res.ok ? undefined : `(${res.subtype})`,
   });
-  return { text: res.ok && res.text ? res.text : `_No findings (${res.subtype})._`, res };
+  return { text: res.ok && res.text ? res.text : `_No findings (${res.subtype}) for "${sub.title}"._`, res };
 }
 
 function formatFindings(items: { sub: Subtopic; text: string }[]): string {
@@ -376,28 +387,38 @@ async function factCheckWorker(
 ): Promise<{ fc: FactCheck; res: AgentResult }> {
   const label = claim.slice(0, 80);
   emit({ type: "worker", ts: now(), stage: "factcheck", index, label, state: "start" });
-  const res = await runAgent({
-    model: config.models.factcheck,
-    systemPrompt: FACTCHECK_SYSTEM,
-    allowedTools: ctx.factTools,
-    cwd: ctx.cwd,
-    maxTurns: clamp(config.factcheckMaxTurns, 2, 20),
-    prompt:
-      `Claim to verify:\n"${claim}"\n\n` +
-      `${ctx.sourcesGuidance}${ctx.localContext}\n` +
-      `JSON shape:\n` +
-      `{"verdict":"supported|unsupported|mixed|unclear","note":"one-sentence justification","sources":["url or file path"]}`,
-    onActivity: (a) =>
-      emit({
-        type: "worker",
-        ts: now(),
-        stage: "factcheck",
-        index,
-        label,
-        state: "activity",
-        detail: `${a.tool}${a.detail ? ": " + a.detail.slice(0, 100) : ""}`,
-      }),
-  });
+  let res: AgentResult;
+  try {
+    res = await runAgent({
+      model: config.models.factcheck,
+      systemPrompt: FACTCHECK_SYSTEM,
+      allowedTools: ctx.factTools,
+      cwd: ctx.cwd,
+      maxTurns: clamp(config.factcheckMaxTurns, 2, 20),
+      prompt:
+        `Claim to verify:\n"${claim}"\n\n` +
+        `${ctx.sourcesGuidance}${ctx.localContext}\n` +
+        `Do 1-2 searches then respond immediately with JSON — do not keep searching.\n` +
+        `JSON shape:\n` +
+        `{"verdict":"supported|unsupported|mixed|unclear","note":"one-sentence justification","sources":["url or file path"]}`,
+      onActivity: (a) =>
+        emit({
+          type: "worker",
+          ts: now(),
+          stage: "factcheck",
+          index,
+          label,
+          state: "activity",
+          detail: `${a.tool}${a.detail ? ": " + a.detail.slice(0, 100) : ""}`,
+        }),
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    emit({ type: "worker", ts: now(), stage: "factcheck", index, label, state: "done", detail: "(error)" });
+    const empty: AgentResult = { text: "", ok: false, subtype: "error", usage: {}, costUsd: 0, model: config.models.factcheck };
+    const fc: FactCheck = { claim, verdict: "unclear", note: `Worker failed: ${msg.slice(0, 120)}`, sources: [] };
+    return { fc, res: empty };
+  }
 
   const parsed = extractJson<Partial<FactCheck>>(res.text) ?? {};
   const verdict = ["supported", "unsupported", "mixed", "unclear"].includes(String(parsed.verdict))

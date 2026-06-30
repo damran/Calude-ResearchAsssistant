@@ -30,8 +30,8 @@ export const config = {
   fanoutWidth: int("FANOUT_WIDTH", 4),
   maxRounds: int("MAX_ROUNDS", 2),
   workerConcurrency: int("WORKER_CONCURRENCY", 4),
-  researchMaxTurns: int("RESEARCH_MAX_TURNS", 8),
-  factcheckMaxTurns: int("FACTCHECK_MAX_TURNS", 6),
+  researchMaxTurns: int("RESEARCH_MAX_TURNS", 14),
+  factcheckMaxTurns: int("FACTCHECK_MAX_TURNS", 8),
 } as const;
 
 // True when authenticated to Claude via subscription OAuth (no API key set).
