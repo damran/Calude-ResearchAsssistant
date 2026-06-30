@@ -1,0 +1,413 @@
+// The research pipeline: an explicit, deterministic orchestrator that pins each
+// stage to a model so the expensive token bulk (fan-out research + fact-check)
+// lands on cheaper models while Opus only plans and synthesizes.
+//
+//   1. plan        (Opus)        -> N subtopics + success criteria
+//   2. research    (Sonnet x N)  -> per-subtopic findings with sources  [parallel]
+//   3. evaluate    (Opus)        -> coverage check, optional 2nd round, key claims
+//   4. fact-check  (Sonnet x M)  -> verify key claims against the web    [parallel]
+//   5. synthesize  (Opus)        -> final cited report + confidence notes
+
+import { addUsage, runAgent, WEB_TOOLS, type AgentResult, type AgentUsage } from "./agents.js";
+import { config } from "./config.js";
+import { clamp, extractJson, mapLimit } from "./util.js";
+
+export type Stage = "plan" | "research" | "evaluate" | "factcheck" | "synthesize";
+
+export interface Subtopic {
+  title: string;
+  question: string;
+}
+
+export interface FactCheck {
+  claim: string;
+  verdict: "supported" | "unsupported" | "mixed" | "unclear";
+  note: string;
+  sources: string[];
+}
+
+export type PipelineEvent =
+  | { type: "status"; ts: number; stage: Stage | "init"; message: string }
+  | { type: "stage"; ts: number; stage: Stage; state: "start" | "done"; detail?: string }
+  | { type: "plan"; ts: number; subtopics: Subtopic[]; successCriteria: string[] }
+  | {
+      type: "worker";
+      ts: number;
+      stage: "research" | "factcheck";
+      index: number;
+      label: string;
+      state: "start" | "activity" | "done";
+      detail?: string;
+    }
+  | { type: "usage"; ts: number; costUsd: number; inputTokens: number; outputTokens: number }
+  | { type: "report"; ts: number; markdown: string }
+  | { type: "error"; ts: number; message: string }
+  | { type: "done"; ts: number };
+
+export interface RunRecord {
+  id: string;
+  goal: string;
+  status: "running" | "done" | "error";
+  createdAt: string;
+  finishedAt?: string;
+  authMode: string;
+  subtopics: Subtopic[];
+  factChecks: FactCheck[];
+  reportMarkdown?: string;
+  usage: AgentUsage;
+  costUsd: number;
+  error?: string;
+  events: PipelineEvent[];
+}
+
+export type Emit = (ev: PipelineEvent) => void;
+
+const now = () => Date.now();
+
+function accrue(record: RunRecord, res: AgentResult, emit: Emit): void {
+  record.usage = addUsage(record.usage, res.usage);
+  record.costUsd += res.costUsd;
+  emit({
+    type: "usage",
+    ts: now(),
+    costUsd: Number(record.costUsd.toFixed(4)),
+    inputTokens: record.usage.input_tokens ?? 0,
+    outputTokens: record.usage.output_tokens ?? 0,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Stage 1 — plan
+// ---------------------------------------------------------------------------
+
+const PLAN_SYSTEM =
+  "You are the lead researcher planning a deep-research investigation. " +
+  "Decompose the user's goal into independent, parallelizable subtopics that together fully cover it. " +
+  "Each subtopic is handed to a separate worker with NO other context, so make each one self-contained and framed as a precise question. " +
+  "Respond with JSON only — no prose, no code fences.";
+
+async function planStage(goal: string, fanout: number): Promise<{ subtopics: Subtopic[]; successCriteria: string[]; raw: AgentResult }> {
+  const raw = await runAgent({
+    model: config.models.plan,
+    systemPrompt: PLAN_SYSTEM,
+    maxTurns: 2,
+    prompt:
+      `Research goal:\n${goal}\n\n` +
+      `Produce exactly ${fanout} subtopics. Do not use any tools.\n` +
+      `JSON shape:\n` +
+      `{"subtopics":[{"title":"short label","question":"precise self-contained question"}],` +
+      `"successCriteria":["what a complete answer must include"]}`,
+  });
+
+  const parsed = extractJson<{ subtopics?: Subtopic[]; successCriteria?: string[] }>(raw.text);
+  let subtopics = Array.isArray(parsed?.subtopics) ? parsed!.subtopics : [];
+  subtopics = subtopics
+    .filter((s) => s && typeof s.question === "string" && s.question.trim())
+    .slice(0, fanout)
+    .map((s) => ({ title: String(s.title ?? s.question).slice(0, 120), question: String(s.question) }));
+
+  // Fallback: if the planner produced nothing parseable, research the goal directly.
+  if (subtopics.length === 0) {
+    subtopics = [{ title: "Direct investigation", question: goal }];
+  }
+  const successCriteria = Array.isArray(parsed?.successCriteria)
+    ? parsed!.successCriteria.map(String).slice(0, 10)
+    : [];
+  return { subtopics, successCriteria, raw };
+}
+
+// ---------------------------------------------------------------------------
+// Stage 2 / re-round — research worker
+// ---------------------------------------------------------------------------
+
+const RESEARCH_SYSTEM =
+  "You are a research worker investigating ONE subtopic. Use web search and fetch to gather facts. " +
+  "Prefer primary and authoritative sources, note publication dates, and flag where sources disagree. " +
+  "Be concise and factual. Every nontrivial claim must cite a real source URL — never invent URLs.";
+
+async function researchWorker(
+  goal: string,
+  sub: Subtopic,
+  index: number,
+  emit: Emit,
+): Promise<{ text: string; res: AgentResult }> {
+  emit({ type: "worker", ts: now(), stage: "research", index, label: sub.title, state: "start" });
+  const res = await runAgent({
+    model: config.models.research,
+    systemPrompt: RESEARCH_SYSTEM,
+    allowedTools: [...WEB_TOOLS],
+    maxTurns: clamp(config.researchMaxTurns, 2, 20),
+    prompt:
+      `Overall goal (for context only):\n${goal}\n\n` +
+      `Your subtopic: ${sub.title}\nQuestion: ${sub.question}\n\n` +
+      `Run a few web searches, fetch the best sources, then write a findings brief in markdown:\n` +
+      `- 3 to 8 bullet points of concrete findings, each ending with its source URL in parentheses\n` +
+      `- then a "Sources:" line listing the URLs you actually used\n` +
+      `Do not fabricate URLs. If evidence is thin or conflicting, say so.`,
+    onActivity: (a) =>
+      emit({
+        type: "worker",
+        ts: now(),
+        stage: "research",
+        index,
+        label: sub.title,
+        state: "activity",
+        detail: `${a.tool}${a.detail ? ": " + a.detail.slice(0, 100) : ""}`,
+      }),
+  });
+  emit({
+    type: "worker",
+    ts: now(),
+    stage: "research",
+    index,
+    label: sub.title,
+    state: "done",
+    detail: res.ok ? undefined : `(${res.subtype})`,
+  });
+  return { text: res.ok && res.text ? res.text : `_No findings (${res.subtype})._`, res };
+}
+
+function formatFindings(items: { sub: Subtopic; text: string }[]): string {
+  return items
+    .map((it, i) => `### Subtopic ${i + 1}: ${it.sub.title}\nQuestion: ${it.sub.question}\n\n${it.text}`)
+    .join("\n\n---\n\n");
+}
+
+// ---------------------------------------------------------------------------
+// Stage 3 — evaluate (coverage + key claims + optional follow-up round)
+// ---------------------------------------------------------------------------
+
+const EVAL_SYSTEM =
+  "You are the research editor. Given the goal and the collected findings, judge how well the goal is covered, " +
+  "name any important gaps, and extract the most important INDEPENDENTLY CHECKABLE factual claims for verification. " +
+  "Respond with JSON only — no prose, no code fences.";
+
+interface EvalResult {
+  coverage: "good" | "partial";
+  gaps: string[];
+  followups: Subtopic[];
+  keyClaims: string[];
+}
+
+async function evaluateStage(
+  goal: string,
+  findings: string,
+  fanout: number,
+  allowFollowups: boolean,
+): Promise<{ evalResult: EvalResult; raw: AgentResult }> {
+  const raw = await runAgent({
+    model: config.models.evaluate,
+    systemPrompt: EVAL_SYSTEM,
+    maxTurns: 2,
+    prompt:
+      `Goal:\n${goal}\n\nCollected findings:\n${findings}\n\n` +
+      `Do not use tools. JSON shape:\n` +
+      `{"coverage":"good|partial",` +
+      `"gaps":["short description"],` +
+      `"followups":[{"title":"...","question":"..."}],` +
+      `"keyClaims":["a specific, checkable factual claim drawn from the findings"]}\n` +
+      `Include followups ONLY for important gaps worth another search round` +
+      `${allowFollowups ? ` (at most ${fanout})` : ` — but return [] for followups now`}. ` +
+      `Return at most 6 keyClaims.`,
+  });
+
+  const parsed = extractJson<Partial<EvalResult>>(raw.text) ?? {};
+  const evalResult: EvalResult = {
+    coverage: parsed.coverage === "good" ? "good" : "partial",
+    gaps: Array.isArray(parsed.gaps) ? parsed.gaps.map(String).slice(0, 10) : [],
+    followups:
+      allowFollowups && Array.isArray(parsed.followups)
+        ? parsed.followups
+            .filter((s) => s && typeof s.question === "string" && s.question.trim())
+            .slice(0, fanout)
+            .map((s) => ({ title: String(s.title ?? s.question).slice(0, 120), question: String(s.question) }))
+        : [],
+    keyClaims: Array.isArray(parsed.keyClaims)
+      ? parsed.keyClaims.map(String).map((c) => c.trim()).filter(Boolean).slice(0, 6)
+      : [],
+  };
+  return { evalResult, raw };
+}
+
+// ---------------------------------------------------------------------------
+// Stage 4 — fact-check worker
+// ---------------------------------------------------------------------------
+
+const FACTCHECK_SYSTEM =
+  "You are a fact-checker verifying a single factual claim against independent web sources. " +
+  "Be skeptical: do not trust the claim's own phrasing — find corroborating or contradicting evidence. " +
+  "Respond with JSON only — no prose, no code fences.";
+
+async function factCheckWorker(claim: string, index: number, emit: Emit): Promise<{ fc: FactCheck; res: AgentResult }> {
+  const label = claim.slice(0, 80);
+  emit({ type: "worker", ts: now(), stage: "factcheck", index, label, state: "start" });
+  const res = await runAgent({
+    model: config.models.factcheck,
+    systemPrompt: FACTCHECK_SYSTEM,
+    allowedTools: [...WEB_TOOLS],
+    maxTurns: clamp(config.factcheckMaxTurns, 2, 20),
+    prompt:
+      `Claim to verify:\n"${claim}"\n\n` +
+      `Use web search/fetch to check it against independent sources. JSON shape:\n` +
+      `{"verdict":"supported|unsupported|mixed|unclear","note":"one-sentence justification","sources":["url"]}`,
+    onActivity: (a) =>
+      emit({
+        type: "worker",
+        ts: now(),
+        stage: "factcheck",
+        index,
+        label,
+        state: "activity",
+        detail: `${a.tool}${a.detail ? ": " + a.detail.slice(0, 100) : ""}`,
+      }),
+  });
+
+  const parsed = extractJson<Partial<FactCheck>>(res.text) ?? {};
+  const verdict = ["supported", "unsupported", "mixed", "unclear"].includes(String(parsed.verdict))
+    ? (parsed.verdict as FactCheck["verdict"])
+    : "unclear";
+  const fc: FactCheck = {
+    claim,
+    verdict,
+    note: typeof parsed.note === "string" ? parsed.note : "",
+    sources: Array.isArray(parsed.sources) ? parsed.sources.map(String).slice(0, 8) : [],
+  };
+  emit({ type: "worker", ts: now(), stage: "factcheck", index, label, state: "done", detail: verdict });
+  return { fc, res };
+}
+
+// ---------------------------------------------------------------------------
+// Stage 5 — synthesize
+// ---------------------------------------------------------------------------
+
+const SYNTH_SYSTEM =
+  "You are the lead researcher writing the final report. Use ONLY the provided findings and fact-check results — " +
+  "do not introduce new facts or URLs. Lead with the answer; write for a smart reader who wants the conclusion first.";
+
+async function synthesizeStage(
+  goal: string,
+  findings: string,
+  factChecks: FactCheck[],
+): Promise<AgentResult> {
+  const fcText = factChecks.length
+    ? factChecks.map((f) => `- [${f.verdict}] ${f.claim}${f.note ? ` — ${f.note}` : ""}`).join("\n")
+    : "(no claims were fact-checked)";
+  return runAgent({
+    model: config.models.synth,
+    systemPrompt: SYNTH_SYSTEM,
+    maxTurns: 2,
+    prompt:
+      `Goal:\n${goal}\n\nFindings:\n${findings}\n\nFact-check results:\n${fcText}\n\n` +
+      `Do not use tools. Write a markdown report with:\n` +
+      `1. A short, direct answer to the goal up front.\n` +
+      `2. Organized sections covering the findings, with inline source links.\n` +
+      `3. A "Sources" list of the URLs referenced.\n` +
+      `4. A final "Confidence & caveats" section that explicitly flags anything fact-checking marked ` +
+      `unsupported, mixed, or unclear, and any gaps still open.`,
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Orchestrator
+// ---------------------------------------------------------------------------
+
+export async function runPipeline(record: RunRecord, emit: Emit): Promise<void> {
+  const goal = record.goal;
+  const fanout = clamp(config.fanoutWidth, 1, 12);
+  const maxRounds = clamp(config.maxRounds, 1, 4);
+
+  try {
+    // 1. Plan
+    emit({ type: "stage", ts: now(), stage: "plan", state: "start" });
+    emit({ type: "status", ts: now(), stage: "plan", message: `Planning ${fanout} research angles with ${config.models.plan}…` });
+    const plan = await planStage(goal, fanout);
+    accrue(record, plan.raw, emit);
+    record.subtopics = plan.subtopics;
+    emit({ type: "plan", ts: now(), subtopics: plan.subtopics, successCriteria: plan.successCriteria });
+    emit({ type: "stage", ts: now(), stage: "plan", state: "done", detail: `${plan.subtopics.length} subtopics` });
+
+    // 2. Research (round 1) + optional follow-up rounds driven by evaluate
+    const collected: { sub: Subtopic; text: string }[] = [];
+    let round = 1;
+    let toResearch = plan.subtopics;
+    let evalResult: EvalResult = { coverage: "partial", gaps: [], followups: [], keyClaims: [] };
+
+    while (toResearch.length > 0 && round <= maxRounds) {
+      emit({ type: "stage", ts: now(), stage: "research", state: "start", detail: `round ${round}` });
+      emit({
+        type: "status",
+        ts: now(),
+        stage: "research",
+        message: `Round ${round}: ${toResearch.length} ${config.models.research} workers (≤${config.workerConcurrency} in parallel)…`,
+      });
+      const subs = toResearch;
+      const results = await mapLimit(subs, config.workerConcurrency, (sub, i) => researchWorker(goal, sub, i, emit));
+      results.forEach((r, i) => {
+        accrue(record, r.res, emit);
+        collected.push({ sub: subs[i] as Subtopic, text: r.text });
+      });
+      emit({ type: "stage", ts: now(), stage: "research", state: "done", detail: `round ${round}` });
+
+      // 3. Evaluate — coverage + claims, and decide whether to run another round
+      const allowFollowups = round < maxRounds;
+      emit({ type: "stage", ts: now(), stage: "evaluate", state: "start" });
+      emit({ type: "status", ts: now(), stage: "evaluate", message: `Assessing coverage with ${config.models.evaluate}…` });
+      const evaluation = await evaluateStage(goal, formatFindings(collected), fanout, allowFollowups);
+      accrue(record, evaluation.raw, emit);
+      evalResult = evaluation.evalResult;
+      emit({
+        type: "stage",
+        ts: now(),
+        stage: "evaluate",
+        state: "done",
+        detail: `coverage: ${evalResult.coverage}; ${evalResult.followups.length} follow-ups; ${evalResult.keyClaims.length} claims`,
+      });
+
+      if (evalResult.coverage === "good" || evalResult.followups.length === 0) break;
+      toResearch = evalResult.followups;
+      round += 1;
+    }
+
+    const findings = formatFindings(collected);
+
+    // 4. Fact-check key claims in parallel
+    if (evalResult.keyClaims.length > 0) {
+      emit({ type: "stage", ts: now(), stage: "factcheck", state: "start" });
+      emit({
+        type: "status",
+        ts: now(),
+        stage: "factcheck",
+        message: `Verifying ${evalResult.keyClaims.length} claims with ${config.models.factcheck}…`,
+      });
+      const checks = await mapLimit(evalResult.keyClaims, config.workerConcurrency, (claim, i) =>
+        factCheckWorker(claim, i, emit),
+      );
+      checks.forEach((c) => {
+        accrue(record, c.res, emit);
+        record.factChecks.push(c.fc);
+      });
+      emit({ type: "stage", ts: now(), stage: "factcheck", state: "done", detail: `${record.factChecks.length} checked` });
+    } else {
+      emit({ type: "status", ts: now(), stage: "factcheck", message: "No checkable claims surfaced; skipping fact-check." });
+    }
+
+    // 5. Synthesize the final report
+    emit({ type: "stage", ts: now(), stage: "synthesize", state: "start" });
+    emit({ type: "status", ts: now(), stage: "synthesize", message: `Writing the report with ${config.models.synth}…` });
+    const synth = await synthesizeStage(goal, findings, record.factChecks);
+    accrue(record, synth, emit);
+    record.reportMarkdown = synth.ok && synth.text ? synth.text : `# Report incomplete\n\nThe synthesis step failed (${synth.subtype}).`;
+    emit({ type: "stage", ts: now(), stage: "synthesize", state: "done" });
+    emit({ type: "report", ts: now(), markdown: record.reportMarkdown });
+
+    record.status = "done";
+    record.finishedAt = new Date().toISOString();
+    emit({ type: "done", ts: now() });
+  } catch (err) {
+    record.status = "error";
+    record.finishedAt = new Date().toISOString();
+    record.error = err instanceof Error ? err.message : String(err);
+    emit({ type: "error", ts: now(), message: record.error });
+    emit({ type: "done", ts: now() });
+  }
+}

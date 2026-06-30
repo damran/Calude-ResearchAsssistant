@@ -1,0 +1,14 @@
+services:
+  research-assistant:
+    build: .
+    container_name: research-assistant
+    env_file: .env
+    ports:
+      # host:container — both driven by PORT in .env (default 8787)
+      - "${PORT:-8787}:${PORT:-8787}"
+    volumes:
+      - ra-data:/app/data
+    restart: unless-stopped
+
+volumes:
+  ra-data:

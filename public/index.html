@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Research Assistant</title>
+    <style>
+      :root {
+        --bg: #0f1115;
+        --panel: #171a21;
+        --panel2: #1d212a;
+        --line: #2a2f3a;
+        --fg: #e6e8ec;
+        --muted: #9aa3b2;
+        --accent: #c98a4b;
+        --accent2: #6ea8fe;
+        --ok: #5bbf7b;
+        --warn: #e0b341;
+        --bad: #e0685f;
+        --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font: 15px/1.55 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      }
+      header {
+        display: flex; align-items: center; gap: 12px;
+        padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
+      }
+      header h1 { font-size: 16px; margin: 0; letter-spacing: 0.2px; }
+      header .spacer { flex: 1; }
+      .badge {
+        font: 12px/1 var(--mono); color: var(--muted);
+        border: 1px solid var(--line); border-radius: 999px; padding: 6px 10px;
+      }
+      .badge b { color: var(--accent); font-weight: 600; }
+      main { max-width: 1100px; margin: 0 auto; padding: 20px; display: grid; gap: 18px; grid-template-columns: 1fr; }
+      @media (min-width: 920px) { main { grid-template-columns: 380px 1fr; align-items: start; } }
+      .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+      .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--muted); margin: 0 0 12px; }
+      textarea {
+        width: 100%; min-height: 120px; resize: vertical; background: var(--panel2);
+        color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 11px;
+        font: inherit;
+      }
+      button {
+        background: var(--accent); color: #1a1205; border: 0; border-radius: 8px;
+        padding: 10px 16px; font-weight: 600; cursor: pointer;
+      }
+      button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--line); }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      .row { display: flex; gap: 10px; align-items: center; margin-top: 10px; }
+      input[type="password"], input[type="text"] {
+        flex: 1; background: var(--panel2); color: var(--fg); border: 1px solid var(--line);
+        border-radius: 8px; padding: 10px; font: inherit;
+      }
+      .stage { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px dashed var(--line); }
+      .stage:last-child { border-bottom: 0; }
+      .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line); flex: none; }
+      .dot.run { background: var(--accent2); box-shadow: 0 0 0 4px rgba(110,168,254,0.15); animation: pulse 1.2s infinite; }
+      .dot.done { background: var(--ok); }
+      .dot.err { background: var(--bad); }
+      @keyframes pulse { 50% { opacity: 0.4; } }
+      .stage .name { width: 92px; font-weight: 600; }
+      .stage .detail { color: var(--muted); font-size: 13px; }
+      .sub { font-size: 13px; color: var(--fg); padding: 4px 0; }
+      .sub b { color: var(--accent); }
+      .activity { font: 12px/1.5 var(--mono); color: var(--muted); max-height: 190px; overflow: auto; margin-top: 8px; }
+      .activity .ev { padding: 1px 0; }
+      .activity .ev .tag { color: var(--accent2); }
+      .statusline { color: var(--muted); font-size: 13px; min-height: 18px; margin-top: 4px; }
+      .report { line-height: 1.65; }
+      .report h1 { font-size: 22px; } .report h2 { font-size: 18px; margin-top: 22px; }
+      .report h3 { font-size: 15px; } .report a { color: var(--accent2); }
+      .report code { background: var(--panel2); padding: 1px 5px; border-radius: 5px; font: 13px var(--mono); }
+      .report pre { background: var(--panel2); padding: 12px; border-radius: 8px; overflow: auto; }
+      .report blockquote { border-left: 3px solid var(--line); margin: 0; padding-left: 12px; color: var(--muted); }
+      .report hr { border: 0; border-top: 1px solid var(--line); margin: 18px 0; }
+      .verdict { font: 12px var(--mono); }
+      .v-supported { color: var(--ok); } .v-unsupported { color: var(--bad); }
+      .v-mixed, .v-unclear { color: var(--warn); }
+      .recent a { display: block; color: var(--fg); text-decoration: none; padding: 7px 0; border-bottom: 1px dashed var(--line); font-size: 13px; }
+      .recent a:hover { color: var(--accent); }
+      .recent .meta { color: var(--muted); font: 11px var(--mono); }
+      .overlay { position: fixed; inset: 0; background: rgba(8,9,12,0.92); display: flex; align-items: center; justify-content: center; z-index: 50; }
+      .overlay .card { width: min(420px, 92vw); }
+      .hidden { display: none !important; }
+      .err { color: var(--bad); font-size: 13px; margin-top: 8px; }
+      .cost { font: 12px var(--mono); color: var(--muted); }
+      .cost b { color: var(--accent); }
+    </style>
+  </head>
+  <body>
+    <div id="login" class="overlay">
+      <div class="card">
+        <h2>Sign in</h2>
+        <p style="color: var(--muted); font-size: 13px; margin-top: 0;">
+          Enter the shared access token (<code>APP_TOKEN</code>).
+        </p>
+        <div class="row">
+          <input id="token" type="password" placeholder="APP_TOKEN" autocomplete="current-password" />
+          <button id="loginBtn">Enter</button>
+        </div>
+        <div id="loginErr" class="err hidden">Wrong token.</div>
+      </div>
+    </div>
+
+    <header>
+      <h1>🔬 Research Assistant</h1>
+      <span class="spacer"></span>
+      <span id="authBadge" class="badge"></span>
+      <button id="logoutBtn" class="secondary" style="padding: 6px 10px;">Sign out</button>
+    </header>
+
+    <main>
+      <section style="display: grid; gap: 18px;">
+        <div class="card">
+          <h2>New research</h2>
+          <textarea id="goal" placeholder="e.g. Compare the leading open-source vector databases for a small team in 2026 — cost, performance, and operational burden."></textarea>
+          <div class="row">
+            <button id="startBtn">Start research</button>
+            <span id="modelsHint" class="cost"></span>
+          </div>
+          <div id="startErr" class="err hidden"></div>
+        </div>
+
+        <div class="card recent">
+          <h2>Recent runs</h2>
+          <div id="recent"></div>
+        </div>
+      </section>
+
+      <section style="display: grid; gap: 18px;">
+        <div class="card">
+          <h2>Progress <span id="costBadge" class="cost" style="float: right; text-transform: none; letter-spacing: 0;"></span></h2>
+          <div id="stages"></div>
+          <div id="statusline" class="statusline"></div>
+          <div id="plan" style="margin-top: 10px;"></div>
+          <div id="activity" class="activity"></div>
+        </div>
+
+        <div id="reportCard" class="card hidden">
+          <h2>Report</h2>
+          <div id="report" class="report"></div>
+        </div>
+      </section>
+    </main>
+
+    <script src="/app.js"></script>
+  </body>
+</html>
