@@ -225,6 +225,10 @@
         color: var(--muted); margin: 6px 0;
       }
       .report-body hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0; }
+      .report-body table { border-collapse: collapse; width: 100%; margin: 10px 0; font-size: 13px; display: block; overflow-x: auto; }
+      .report-body th, .report-body td { border: 1px solid var(--line); padding: 6px 10px; text-align: left; vertical-align: top; }
+      .report-body th { background: var(--panel2); font-weight: 600; white-space: nowrap; }
+      .report-body tr:nth-child(even) td { background: rgba(255,255,255,.025); }
 
       /* Report footer */
       .report-footer {

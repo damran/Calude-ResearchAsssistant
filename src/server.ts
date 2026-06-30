@@ -4,6 +4,7 @@
 // reconnects) mid-run, and persisted to disk on completion.
 
 import { createReadStream, createWriteStream, existsSync } from "node:fs";
+import { readFile as fsReadFile, writeFile as fsWriteFile } from "node:fs/promises";
 import path from "node:path";
 import { pipeline as streamPipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
@@ -83,6 +84,23 @@ function launch(record: RunRecord): void {
   })();
 }
 
+// Convert an uploaded XLSX/XLS to per-sheet CSVs so research agents can Read them.
+// The original binary stays; the CSVs appear alongside it in the uploads dir.
+async function convertXlsxToCsv(filePath: string, dir: string, originalName: string): Promise<void> {
+  try {
+    const { read, utils } = await import("xlsx");
+    const buf = await fsReadFile(filePath);
+    const wb = read(buf);
+    for (const sheet of wb.SheetNames) {
+      const csv = utils.sheet_to_csv(wb.Sheets[sheet]!);
+      const slug = sheet.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 40);
+      await fsWriteFile(path.join(dir, `${originalName}__${slug}.csv`), csv, "utf-8");
+    }
+  } catch {
+    // xlsx parse failed — agents will see the original file only
+  }
+}
+
 const app = Fastify({ logger: true, bodyLimit: 2 * 1024 * 1024 });
 
 await app.register(fastifyMultipart, {
@@ -130,9 +148,13 @@ app.post("/research", { preHandler: requireAuth }, async (req, reply) => {
       for await (const part of req.parts()) {
         if (part.type === "file") {
           const name = safeName(part.filename || `upload-${uploadCount}`) || `upload-${uploadCount}`;
-          await streamPipeline(part.file, createWriteStream(path.join(uploadsDir(id), name)));
+          const filePath = path.join(uploadsDir(id), name);
+          await streamPipeline(part.file, createWriteStream(filePath));
           if (part.file.truncated) {
             return reply.code(413).send({ error: `File ${name} exceeds the 25 MB limit.` });
+          }
+          if (/\.xlsx?$/i.test(name)) {
+            await convertXlsxToCsv(filePath, uploadsDir(id), name);
           }
           uploadCount++;
         } else {

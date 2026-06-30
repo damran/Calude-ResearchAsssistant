@@ -75,7 +75,8 @@ function inlineMd(s) {
 
 function mdToHtml(md) {
   const lines = escHtml(String(md).replace(/\r\n/g, "\n")).split("\n");
-  const blockRe = /^(#{1,6})\s|^```|^>\s?|^\s*[-*+]\s+|^\s*\d+[.)]\s+|^(-{3,}|\*{3,}|_{3,})\s*$/;
+  // | added so table rows break out of the paragraph accumulator
+  const blockRe = /^(#{1,6})\s|^```|^>\s?|^\s*[-*+]\s+|^\s*\d+[.)]\s+|^(-{3,}|\*{3,}|_{3,})\s*$|^\s*\|/;
   let html = "", i = 0;
   while (i < lines.length) {
     const line = lines[i];
@@ -90,6 +91,25 @@ function mdToHtml(md) {
     if (/^(-{3,}|\*{3,}|_{3,})$/.test(t)) { html += "<hr>"; i++; continue; }
     const h = line.match(/^(#{1,6})\s+(.*)$/);
     if (h) { html += `<h${h[1].length}>${inlineMd(h[2])}</h${h[1].length}>`; i++; continue; }
+    // Tables: accumulate all pipe lines, first row = header, second = separator
+    if (/^\s*\|/.test(line)) {
+      const rows = [];
+      while (i < lines.length && /^\s*\|/.test(lines[i])) rows.push(lines[i++]);
+      const splitRow = (r) => r.trim().replace(/^\||\|$/g, "").split("|").map((c) => inlineMd(c.trim()));
+      const isSep   = (r) => /^[\s|:\-]+$/.test(r);
+      if (rows.length >= 2 && isSep(rows[1])) {
+        const hdr  = splitRow(rows[0]);
+        const body = rows.slice(2).filter((r) => !isSep(r));
+        html += `<table><thead><tr>${hdr.map((c) => `<th>${c}</th>`).join("")}</tr></thead>`;
+        if (body.length)
+          html += `<tbody>${body.map((r) => `<tr>${splitRow(r).map((c) => `<td>${c}</td>`).join("")}</tr>`).join("")}</tbody>`;
+        html += `</table>`;
+      } else {
+        // Not a proper table — render each row as a paragraph
+        for (const r of rows) html += `<p>${inlineMd(r.trim())}</p>`;
+      }
+      continue;
+    }
     if (/^>\s?/.test(line)) {
       const q = [];
       while (i < lines.length && /^>\s?/.test(lines[i])) q.push(lines[i++].replace(/^>\s?/, ""));
