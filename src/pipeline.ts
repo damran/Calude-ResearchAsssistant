@@ -21,7 +21,7 @@ import {
   type AgentUsage,
 } from "./agents.js";
 import { config } from "./config.js";
-import { WORKSPACE_PATH, dirTree, listUploads, outputsDir, uploadsDir } from "./store.js";
+import { WORKSPACE_PATH, dirTree, listUploads, loadRecord, outputsDir, uploadsDir } from "./store.js";
 import { clamp, extractJson, mapLimit } from "./util.js";
 
 export type Stage = "plan" | "research" | "evaluate" | "factcheck" | "synthesize";
@@ -70,9 +70,14 @@ export interface RunRecord {
   finishedAt?: string;
   authMode: string;
   options: RunOptions;
+  /** Set when this run refines an earlier one (feedback / follow-up). */
+  parentId?: string;
+  feedback?: string;
   subtopics: Subtopic[];
   factChecks: FactCheck[];
   reportMarkdown?: string;
+  /** Persisted findings blob so a follow-up run can reuse this run's research. */
+  findings?: string;
   usage: AgentUsage;
   costUsd: number;
   error?: string;
@@ -197,6 +202,45 @@ async function planStage(
     ? parsed!.successCriteria.map(String).slice(0, 10)
     : [];
   return { subtopics, successCriteria, raw };
+}
+
+// ---------------------------------------------------------------------------
+// Stage 1b — refine plan (when this run is feedback/follow-up on a prior run)
+// ---------------------------------------------------------------------------
+
+const REFINE_SYSTEM =
+  "You are the lead researcher revising an existing report based on user feedback. " +
+  "Decide what additional research (if any) is needed to address the feedback, and note how the report should change. " +
+  "Respond with JSON only — no prose, no code fences.";
+
+async function refinePlanStage(
+  goal: string,
+  feedback: string,
+  parentReport: string,
+  fanout: number,
+): Promise<{ subtopics: Subtopic[]; revisionNotes: string; raw: AgentResult }> {
+  const raw = await runAgent({
+    model: config.models.plan,
+    systemPrompt: REFINE_SYSTEM,
+    maxTurns: 2,
+    prompt:
+      `Original goal:\n${goal}\n\nUser feedback on the existing report:\n${feedback}\n\n` +
+      `Existing report:\n${parentReport.slice(0, 12000)}\n\n` +
+      `Do not use tools. Decide what NEW research is needed to address the feedback (it may be none if the ` +
+      `feedback is purely editorial). JSON shape:\n` +
+      `{"followups":[{"title":"short label","question":"precise self-contained question"}],` +
+      `"revisionNotes":"how the report should change to address the feedback"}\n` +
+      `At most ${fanout} followups.`,
+  });
+
+  const parsed = extractJson<{ followups?: Subtopic[]; revisionNotes?: string }>(raw.text) ?? {};
+  const subtopics = Array.isArray(parsed.followups)
+    ? parsed.followups
+        .filter((s) => s && typeof s.question === "string" && s.question.trim())
+        .slice(0, fanout)
+        .map((s) => ({ title: String(s.title ?? s.question).slice(0, 120), question: String(s.question) }))
+    : [];
+  return { subtopics, revisionNotes: typeof parsed.revisionNotes === "string" ? parsed.revisionNotes : "", raw };
 }
 
 // ---------------------------------------------------------------------------
@@ -377,16 +421,33 @@ const SYNTH_SYSTEM =
   "You are the lead researcher writing the final report. Use ONLY the provided findings and fact-check results — " +
   "do not introduce new facts or sources. Lead with the answer; write for a smart reader who wants the conclusion first.";
 
-async function synthesizeStage(goal: string, findings: string, factChecks: FactCheck[]): Promise<AgentResult> {
+interface RefineCtx {
+  feedback: string;
+  parentReport: string;
+  revisionNotes: string;
+}
+
+async function synthesizeStage(
+  goal: string,
+  findings: string,
+  factChecks: FactCheck[],
+  refine?: RefineCtx,
+): Promise<AgentResult> {
   const fcText = factChecks.length
     ? factChecks.map((f) => `- [${f.verdict}] ${f.claim}${f.note ? ` — ${f.note}` : ""}`).join("\n")
     : "(no claims were fact-checked)";
+  const refineBlock = refine
+    ? `\nThis is a REVISION of an earlier report. Address the user's feedback: keep what is still valid, ` +
+      `correct what the feedback flags, and fold in the new findings.\n` +
+      `User feedback:\n${refine.feedback}\n\nRevision notes:\n${refine.revisionNotes}\n\n` +
+      `Previous report:\n${refine.parentReport.slice(0, 16000)}\n`
+    : "";
   return runAgent({
     model: config.models.synth,
     systemPrompt: SYNTH_SYSTEM,
     maxTurns: 2,
     prompt:
-      `Goal:\n${goal}\n\nFindings:\n${findings}\n\nFact-check results:\n${fcText}\n\n` +
+      `Goal:\n${goal}\n${refineBlock}\nFindings:\n${findings}\n\nFact-check results:\n${fcText}\n\n` +
       `Do not use tools. Write a markdown report with:\n` +
       `1. A short, direct answer to the goal up front.\n` +
       `2. Organized sections covering the findings, with inline source links/paths.\n` +
@@ -406,30 +467,60 @@ export async function runPipeline(record: RunRecord, emit: Emit): Promise<void> 
   const maxRounds = clamp(config.maxRounds, 1, 4);
   const ctx = buildSourceCtx(record);
 
+  const refine = Boolean(record.parentId && record.feedback);
+  let priorFindings = "";
+  let parentReport = "";
+  let revisionNotes = "";
+
   try {
-    // 1. Plan (with a local file listing when local sources are in play)
+    // 1. Plan — a fresh decomposition, or a feedback-driven refine plan that
+    //    reads the prior report.
     emit({ type: "stage", ts: now(), stage: "plan", state: "start" });
-    emit({ type: "status", ts: now(), stage: "plan", message: `Planning ${fanout} research angles with ${config.models.plan}…` });
+    let subtopics: Subtopic[];
 
-    let localListing = "";
-    if (record.options.workspace !== "off") {
-      localListing += `\nWorkspace files (${WORKSPACE_PATH}):\n${await dirTree(WORKSPACE_PATH)}\n`;
+    if (refine) {
+      const parent = await loadRecord(record.parentId as string);
+      parentReport = parent?.reportMarkdown ?? "";
+      priorFindings = parent?.findings ?? "";
+      emit({ type: "status", ts: now(), stage: "plan", message: `Refining a previous report with your feedback (${config.models.plan})…` });
+      const rp = await refinePlanStage(goal, record.feedback as string, parentReport, fanout);
+      accrue(record, rp.raw, emit);
+      revisionNotes = rp.revisionNotes;
+      subtopics = rp.subtopics;
+      record.subtopics = subtopics;
+      emit({ type: "plan", ts: now(), subtopics, successCriteria: [] });
+      emit({
+        type: "stage",
+        ts: now(),
+        stage: "plan",
+        state: "done",
+        detail: subtopics.length ? `${subtopics.length} follow-up topics` : "editorial revision (no new research)",
+      });
+    } else {
+      emit({ type: "status", ts: now(), stage: "plan", message: `Planning ${fanout} research angles with ${config.models.plan}…` });
+      let localListing = "";
+      if (record.options.workspace !== "off") {
+        localListing += `\nWorkspace files (${WORKSPACE_PATH}):\n${await dirTree(WORKSPACE_PATH)}\n`;
+      }
+      if (record.options.uploadCount > 0) {
+        const ups = await listUploads(record.id);
+        localListing += `\nUploaded files (${uploadsDir(record.id)}):\n${ups.join("\n") || "(none)"}\n`;
+      }
+      const plan = await planStage(goal, fanout, localListing);
+      accrue(record, plan.raw, emit);
+      subtopics = plan.subtopics;
+      record.subtopics = subtopics;
+      emit({ type: "plan", ts: now(), subtopics, successCriteria: plan.successCriteria });
+      emit({ type: "stage", ts: now(), stage: "plan", state: "done", detail: `${subtopics.length} subtopics` });
     }
-    if (record.options.uploadCount > 0) {
-      const ups = await listUploads(record.id);
-      localListing += `\nUploaded files (${uploadsDir(record.id)}):\n${ups.join("\n") || "(none)"}\n`;
-    }
 
-    const plan = await planStage(goal, fanout, localListing);
-    accrue(record, plan.raw, emit);
-    record.subtopics = plan.subtopics;
-    emit({ type: "plan", ts: now(), subtopics: plan.subtopics, successCriteria: plan.successCriteria });
-    emit({ type: "stage", ts: now(), stage: "plan", state: "done", detail: `${plan.subtopics.length} subtopics` });
-
-    // 2. Research (round 1) + optional follow-up rounds driven by evaluate
+    // 2. Research (round 1) + optional follow-up rounds driven by evaluate.
+    //    In refine mode, prior findings are folded in alongside new ones.
     const collected: { sub: Subtopic; text: string }[] = [];
+    const combinedFindings = () =>
+      [priorFindings, formatFindings(collected)].map((s) => s.trim()).filter(Boolean).join("\n\n---\n\n");
     let round = 1;
-    let toResearch = plan.subtopics;
+    let toResearch = subtopics;
     let evalResult: EvalResult = { coverage: "partial", gaps: [], followups: [], keyClaims: [] };
 
     while (toResearch.length > 0 && round <= maxRounds) {
@@ -452,7 +543,7 @@ export async function runPipeline(record: RunRecord, emit: Emit): Promise<void> 
       const allowFollowups = round < maxRounds;
       emit({ type: "stage", ts: now(), stage: "evaluate", state: "start" });
       emit({ type: "status", ts: now(), stage: "evaluate", message: `Assessing coverage with ${config.models.evaluate}…` });
-      const evaluation = await evaluateStage(goal, formatFindings(collected), fanout, allowFollowups);
+      const evaluation = await evaluateStage(goal, combinedFindings(), fanout, allowFollowups);
       accrue(record, evaluation.raw, emit);
       evalResult = evaluation.evalResult;
       emit({
@@ -468,7 +559,8 @@ export async function runPipeline(record: RunRecord, emit: Emit): Promise<void> 
       round += 1;
     }
 
-    const findings = formatFindings(collected);
+    const findings = combinedFindings();
+    record.findings = findings; // persisted so a follow-up run can reuse it
 
     // 4. Fact-check key claims in parallel
     if (evalResult.keyClaims.length > 0) {
@@ -494,7 +586,12 @@ export async function runPipeline(record: RunRecord, emit: Emit): Promise<void> 
     // 5. Synthesize the final report
     emit({ type: "stage", ts: now(), stage: "synthesize", state: "start" });
     emit({ type: "status", ts: now(), stage: "synthesize", message: `Writing the report with ${config.models.synth}…` });
-    const synth = await synthesizeStage(goal, findings, record.factChecks);
+    const synth = await synthesizeStage(
+      goal,
+      findings,
+      record.factChecks,
+      refine ? { feedback: record.feedback as string, parentReport, revisionNotes } : undefined,
+    );
     accrue(record, synth, emit);
     record.reportMarkdown = synth.ok && synth.text ? synth.text : `# Report incomplete\n\nThe synthesis step failed (${synth.subtype}).`;
     emit({ type: "stage", ts: now(), stage: "synthesize", state: "done" });

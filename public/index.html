@@ -167,6 +167,14 @@
           <h2>Report <span id="downloads" class="dl" style="float: right;"></span></h2>
           <div id="report" class="report"></div>
           <div id="artifacts"></div>
+          <div id="feedbackBlock" style="margin-top: 16px; border-top: 1px solid var(--line); padding-top: 14px;">
+            <div class="sub" style="color: var(--muted); text-transform: uppercase; font-size: 11px; letter-spacing: 0.6px;">Refine / follow up</div>
+            <textarea id="feedback" placeholder="Feedback or a follow-up — e.g. 'go deeper on pricing', or 'the claim about X looks wrong, recheck it'. This re-reads the report above." style="min-height: 70px; margin-top: 8px;"></textarea>
+            <div class="row">
+              <button id="refineBtn" class="secondary">Refine with feedback</button>
+              <span id="refineErr" class="err hidden"></span>
+            </div>
+          </div>
         </div>
       </section>
     </main>

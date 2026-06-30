@@ -130,6 +130,7 @@ export interface RunSummary {
   createdAt: string;
   finishedAt?: string;
   costUsd: number;
+  parentId?: string;
 }
 
 export async function saveRecord(record: RunRecord): Promise<void> {
@@ -170,6 +171,7 @@ export async function listSummaries(limit = 50): Promise<RunSummary[]> {
           createdAt: r.createdAt,
           finishedAt: r.finishedAt,
           costUsd: r.costUsd ?? 0,
+          parentId: r.parentId,
         };
         return summary;
       } catch {

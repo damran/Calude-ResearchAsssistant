@@ -41,6 +41,11 @@ Point the workspace at any folder with `WORKSPACE_DIR` in `.env`.
 **Outputs** — every run's report is downloadable as `.md` / `.json` from the UI. In read-write mode,
 files the agents save to the run's `outputs/` directory show up as downloadable artifacts.
 
+**Follow-ups & feedback** — under any finished report there's a *Refine / follow up* box. Submitting
+feedback (e.g. "go deeper on pricing" or "recheck the claim about X") spawns a linked run that
+**re-reads the prior report and its findings**, does any targeted extra research, and writes a revised
+report. Linked runs are marked with `↳` in Recent runs. Past runs are always re-openable from there.
+
 ---
 
 ## Prerequisites

@@ -37,7 +37,13 @@ interface LiveRun {
 
 const runs = new Map<string, LiveRun>();
 
-function makeRecord(id: string, goal: string, options: RunOptions): RunRecord {
+function makeRecord(
+  id: string,
+  goal: string,
+  options: RunOptions,
+  parentId?: string,
+  feedback?: string,
+): RunRecord {
   return {
     id,
     goal,
@@ -50,6 +56,8 @@ function makeRecord(id: string, goal: string, options: RunOptions): RunRecord {
     usage: {},
     costUsd: 0,
     events: [],
+    ...(parentId ? { parentId } : {}),
+    ...(feedback ? { feedback } : {}),
   };
 }
 
@@ -114,6 +122,8 @@ app.post("/research", { preHandler: requireAuth }, async (req, reply) => {
   let useWeb = true;
   let workspace: RunOptions["workspace"] = "off";
   let uploadCount = 0;
+  let parentId = "";
+  let feedback = "";
 
   try {
     if (req.isMultipart()) {
@@ -129,21 +139,43 @@ app.post("/research", { preHandler: requireAuth }, async (req, reply) => {
           const value = String(part.value ?? "");
           if (part.fieldname === "goal") goal = value.trim();
           else if (part.fieldname === "useWeb") useWeb = value === "true";
+          else if (part.fieldname === "parentId") parentId = value.trim();
+          else if (part.fieldname === "feedback") feedback = value.trim();
           else if (part.fieldname === "workspace" && ["off", "read", "write"].includes(value)) {
             workspace = value as RunOptions["workspace"];
           }
         }
       }
     } else {
-      const body = (req.body ?? {}) as { goal?: unknown; useWeb?: unknown; workspace?: unknown };
+      const body = (req.body ?? {}) as {
+        goal?: unknown;
+        useWeb?: unknown;
+        workspace?: unknown;
+        parentId?: unknown;
+        feedback?: unknown;
+      };
       if (typeof body.goal === "string") goal = body.goal.trim();
       if (typeof body.useWeb === "boolean") useWeb = body.useWeb;
+      if (typeof body.parentId === "string") parentId = body.parentId.trim();
+      if (typeof body.feedback === "string") feedback = body.feedback.trim();
       if (typeof body.workspace === "string" && ["off", "read", "write"].includes(body.workspace)) {
         workspace = body.workspace as RunOptions["workspace"];
       }
     }
   } catch (e) {
     return reply.code(400).send({ error: `Failed to read request: ${(e as Error).message}` });
+  }
+
+  // Feedback / follow-up: inherit goal + sources from the parent run.
+  let isFollowup = false;
+  if (parentId && feedback) {
+    const parent = await loadRecord(parentId);
+    if (parent) {
+      isFollowup = true;
+      if (!goal) goal = parent.goal;
+      useWeb = parent.options.useWeb;
+      workspace = parent.options.workspace;
+    }
   }
 
   if (!goal) return reply.code(400).send({ error: "Provide a non-empty 'goal'." });
@@ -154,7 +186,13 @@ app.post("/research", { preHandler: requireAuth }, async (req, reply) => {
   // A run needs at least one source.
   if (!useWeb && workspace === "off" && uploadCount === 0) useWeb = true;
 
-  const record = makeRecord(id, goal, { useWeb, workspace, uploadCount });
+  const record = makeRecord(
+    id,
+    goal,
+    { useWeb, workspace, uploadCount },
+    isFollowup ? parentId : undefined,
+    isFollowup ? feedback.slice(0, 4000) : undefined,
+  );
   launch(record);
   return reply.code(202).send({ id });
 });

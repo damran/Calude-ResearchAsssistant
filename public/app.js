@@ -243,6 +243,40 @@ async function startResearch() {
   }
 }
 
+// Refine the current report with feedback — spawns a linked run that re-reads
+// the prior report + findings.
+async function refine() {
+  const fb = $("feedback").value.trim();
+  $("refineErr").classList.add("hidden");
+  if (!fb || !currentRunId) {
+    $("refineErr").textContent = "Enter some feedback first.";
+    $("refineErr").classList.remove("hidden");
+    return;
+  }
+  $("refineBtn").disabled = true;
+  try {
+    const rec = await authedFetch(`/research/${currentRunId}`).then((r) => (r.ok ? r.json() : null));
+    const fd = new FormData();
+    fd.append("goal", rec?.goal || "");
+    fd.append("parentId", currentRunId);
+    fd.append("feedback", fb);
+    const res = await authedFetch("/research", { method: "POST", body: fd });
+    if (res.status === 401) {
+      clearToken();
+      return showLogin(true);
+    }
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "failed to start");
+    $("feedback").value = "";
+    connectStream(data.id);
+  } catch (e) {
+    $("refineErr").textContent = String(e.message || e);
+    $("refineErr").classList.remove("hidden");
+  } finally {
+    $("refineBtn").disabled = false;
+  }
+}
+
 async function refreshRecent() {
   try {
     const res = await authedFetch("/api/runs");
@@ -253,7 +287,8 @@ async function refreshRecent() {
         .map((r) => {
           const cost = `$${Number(r.costUsd || 0).toFixed(3)}`;
           const status = r.status === "done" ? "done" : r.status;
-          return `<a href="#" data-id="${r.id}"><div>${escapeHtml(r.goal.slice(0, 90))}</div><div class="meta">${status} · ${cost} · ${new Date(r.createdAt).toLocaleString()}</div></a>`;
+          const prefix = r.parentId ? "↳ " : "";
+          return `<a href="#" data-id="${r.id}"><div>${prefix}${escapeHtml(r.goal.slice(0, 90))}</div><div class="meta">${status} · ${cost} · ${new Date(r.createdAt).toLocaleString()}</div></a>`;
         })
         .join("") || `<div class="cost">No runs yet.</div>`;
     for (const a of $("recent").querySelectorAll("a")) {
@@ -354,6 +389,7 @@ $("logoutBtn").addEventListener("click", () => {
   showLogin();
 });
 $("startBtn").addEventListener("click", startResearch);
+$("refineBtn").addEventListener("click", refine);
 
 buildStages();
 tryAuth();
