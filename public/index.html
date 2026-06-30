@@ -7,177 +7,422 @@
     <style>
       :root {
         --bg: #0f1115;
+        --sidebar: #111418;
         --panel: #171a21;
         --panel2: #1d212a;
-        --line: #2a2f3a;
+        --line: #262b36;
         --fg: #e6e8ec;
-        --muted: #9aa3b2;
+        --muted: #818ea0;
         --accent: #c98a4b;
         --accent2: #6ea8fe;
         --ok: #5bbf7b;
         --warn: #e0b341;
         --bad: #e0685f;
         --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+        --radius: 10px;
       }
-      * { box-sizing: border-box; }
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+      html, body { height: 100%; overflow: hidden; }
       body {
-        margin: 0;
         background: var(--bg);
         color: var(--fg);
-        font: 15px/1.55 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+        font: 14px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        display: flex;
+        flex-direction: column;
       }
-      header {
-        display: flex; align-items: center; gap: 12px;
-        padding: 14px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
+
+      /* ── Header ─────────────────────────────────────── */
+      .app-header {
+        flex: none;
+        display: flex; align-items: center; gap: 10px;
+        height: 46px; padding: 0 14px;
+        background: var(--panel);
+        border-bottom: 1px solid var(--line);
+        z-index: 20;
       }
-      header h1 { font-size: 16px; margin: 0; letter-spacing: 0.2px; }
-      header .spacer { flex: 1; }
+      .app-header .logo {
+        font-size: 14px; font-weight: 600;
+        display: flex; align-items: center; gap: 7px;
+      }
+      .app-header .spacer { flex: 1; }
       .badge {
-        font: 12px/1 var(--mono); color: var(--muted);
-        border: 1px solid var(--line); border-radius: 999px; padding: 6px 10px;
+        font: 11px/1 var(--mono); color: var(--muted);
+        border: 1px solid var(--line); border-radius: 99px;
+        padding: 4px 9px;
       }
       .badge b { color: var(--accent); font-weight: 600; }
-      main { max-width: 1100px; margin: 0 auto; padding: 20px; display: grid; gap: 18px; grid-template-columns: 1fr; }
-      @media (min-width: 920px) { main { grid-template-columns: 380px 1fr; align-items: start; } }
-      .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
-      .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.8px; color: var(--muted); margin: 0 0 12px; }
-      textarea {
-        width: 100%; min-height: 120px; resize: vertical; background: var(--panel2);
-        color: var(--fg); border: 1px solid var(--line); border-radius: 8px; padding: 11px;
-        font: inherit;
+      .hdr-btn {
+        background: none; border: 1px solid var(--line);
+        color: var(--muted); border-radius: 6px;
+        padding: 4px 10px; font: 12px system-ui; cursor: pointer;
       }
-      button {
-        background: var(--accent); color: #1a1205; border: 0; border-radius: 8px;
-        padding: 10px 16px; font-weight: 600; cursor: pointer;
+      .hdr-btn:hover { color: var(--fg); border-color: var(--muted); }
+
+      /* ── App body ────────────────────────────────────── */
+      .app-body {
+        flex: 1; display: flex; min-height: 0; overflow: hidden;
       }
-      button.secondary { background: transparent; color: var(--fg); border: 1px solid var(--line); }
-      button:disabled { opacity: 0.5; cursor: not-allowed; }
-      .row { display: flex; gap: 10px; align-items: center; margin-top: 10px; }
-      input[type="password"], input[type="text"] {
-        flex: 1; background: var(--panel2); color: var(--fg); border: 1px solid var(--line);
-        border-radius: 8px; padding: 10px; font: inherit;
+
+      /* ── Sidebar ─────────────────────────────────────── */
+      .sidebar {
+        width: 230px; flex: none;
+        background: var(--sidebar);
+        border-right: 1px solid var(--line);
+        display: flex; flex-direction: column;
+        overflow: hidden;
       }
-      .stage { display: flex; align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px dashed var(--line); }
-      .stage:last-child { border-bottom: 0; }
-      .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--line); flex: none; }
-      .dot.run { background: var(--accent2); box-shadow: 0 0 0 4px rgba(110,168,254,0.15); animation: pulse 1.2s infinite; }
-      .dot.done { background: var(--ok); }
-      .dot.err { background: var(--bad); }
-      @keyframes pulse { 50% { opacity: 0.4; } }
-      .stage .name { width: 92px; font-weight: 600; }
-      .stage .detail { color: var(--muted); font-size: 13px; }
-      .sub { font-size: 13px; color: var(--fg); padding: 4px 0; }
-      .sub b { color: var(--accent); }
-      .activity { font: 12px/1.5 var(--mono); color: var(--muted); max-height: 190px; overflow: auto; margin-top: 8px; }
-      .activity .ev { padding: 1px 0; }
-      .activity .ev .tag { color: var(--accent2); }
-      .statusline { color: var(--muted); font-size: 13px; min-height: 18px; margin-top: 4px; }
-      .report { line-height: 1.65; }
-      .report h1 { font-size: 22px; } .report h2 { font-size: 18px; margin-top: 22px; }
-      .report h3 { font-size: 15px; } .report a { color: var(--accent2); }
-      .report code { background: var(--panel2); padding: 1px 5px; border-radius: 5px; font: 13px var(--mono); }
-      .report pre { background: var(--panel2); padding: 12px; border-radius: 8px; overflow: auto; }
-      .report blockquote { border-left: 3px solid var(--line); margin: 0; padding-left: 12px; color: var(--muted); }
-      .report hr { border: 0; border-top: 1px solid var(--line); margin: 18px 0; }
-      .verdict { font: 12px var(--mono); }
-      .v-supported { color: var(--ok); } .v-unsupported { color: var(--bad); }
-      .v-mixed, .v-unclear { color: var(--warn); }
-      .recent a { display: block; color: var(--fg); text-decoration: none; padding: 7px 0; border-bottom: 1px dashed var(--line); font-size: 13px; }
-      .recent a:hover { color: var(--accent); }
-      .recent .meta { color: var(--muted); font: 11px var(--mono); }
-      .overlay { position: fixed; inset: 0; background: rgba(8,9,12,0.92); display: flex; align-items: center; justify-content: center; z-index: 50; }
-      .overlay .card { width: min(420px, 92vw); }
+      .sidebar-top {
+        padding: 10px;
+        border-bottom: 1px solid var(--line);
+      }
+      .new-btn {
+        width: 100%; text-align: left;
+        background: var(--panel2); color: var(--fg);
+        border: 1px solid var(--line); border-radius: 8px;
+        padding: 8px 11px;
+        font: 13px system-ui; cursor: pointer;
+        display: flex; align-items: center; gap: 7px;
+      }
+      .new-btn:hover { background: var(--line); }
+      .new-btn .icon { font-size: 16px; color: var(--muted); line-height: 1; }
+      .sidebar-body {
+        flex: 1; overflow-y: auto; padding: 6px 0 12px;
+      }
+      .sidebar-section-label {
+        padding: 8px 11px 4px;
+        font: 10px/1 var(--mono);
+        text-transform: uppercase; letter-spacing: .7px;
+        color: var(--muted);
+      }
+      .run-btn {
+        width: 100%; text-align: left;
+        background: none; border: none; color: var(--fg);
+        padding: 7px 11px; font: 13px system-ui; cursor: pointer;
+        border-radius: 0;
+      }
+      .run-btn:hover { background: var(--panel2); }
+      .run-btn.active { background: var(--panel); }
+      .run-btn .run-title {
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        line-height: 1.3;
+      }
+      .run-btn .run-meta {
+        font: 10px var(--mono); color: var(--muted); margin-top: 2px;
+      }
+
+      /* ── Chat column ─────────────────────────────────── */
+      .chat-col {
+        flex: 1; display: flex; flex-direction: column;
+        min-width: 0; overflow: hidden;
+      }
+
+      /* Scrollable message list */
+      .chat-messages {
+        flex: 1; overflow-y: auto;
+        padding: 28px 0 12px;
+        scroll-behavior: smooth;
+      }
+
+      /* Shared centred container */
+      .msg-row {
+        max-width: 720px; margin: 0 auto;
+        padding: 0 18px;
+      }
+      .msg-row + .msg-row { margin-top: 18px; }
+
+      /* User bubble — right aligned */
+      .user-row {
+        display: flex; justify-content: flex-end;
+      }
+      .user-bubble {
+        background: var(--panel2);
+        border: 1px solid var(--line);
+        border-radius: 14px 14px 4px 14px;
+        padding: 10px 15px;
+        max-width: 78%;
+        font-size: 14px; line-height: 1.5;
+        white-space: pre-wrap; word-break: break-word;
+      }
+
+      /* Assistant bubble — left, with avatar */
+      .asst-row { display: flex; gap: 10px; align-items: flex-start; }
+      .asst-avatar {
+        width: 26px; height: 26px; border-radius: 50%;
+        background: var(--accent); flex: none; margin-top: 1px;
+        display: flex; align-items: center; justify-content: center;
+        font: 11px/1 var(--mono); font-weight: 700; color: #1a1205;
+      }
+      .asst-body { flex: 1; min-width: 0; }
+
+      /* Pipeline progress box */
+      .stages-box {
+        background: var(--panel2);
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        padding: 10px 13px;
+        margin-bottom: 10px;
+        display: flex; flex-direction: column; gap: 5px;
+      }
+      .stage-row {
+        display: flex; align-items: center; gap: 9px; font-size: 13px;
+      }
+      .sdot {
+        width: 7px; height: 7px; border-radius: 50%;
+        flex: none; background: var(--line);
+        transition: background .15s;
+      }
+      .sdot.run { background: var(--accent2); animation: pulse 1.2s infinite; }
+      .sdot.done { background: var(--ok); }
+      .sdot.err  { background: var(--bad); }
+      @keyframes pulse { 50% { opacity: .35; } }
+      .sname { width: 74px; font-weight: 600; color: var(--fg); }
+      .sdetail { color: var(--muted); font-size: 12px; flex: 1; }
+
+      /* Status line */
+      .asst-status {
+        font-size: 12px; color: var(--muted); min-height: 16px;
+        margin-bottom: 6px;
+      }
+
+      /* Activity log toggle */
+      .act-toggle {
+        font: 11px var(--mono); color: var(--muted);
+        background: none; border: none; cursor: pointer;
+        padding: 0 0 6px; text-decoration: underline dotted;
+      }
+      .act-toggle:hover { color: var(--fg); }
+      .act-log {
+        font: 11px/1.6 var(--mono); color: var(--muted);
+        background: var(--panel2); border: 1px solid var(--line);
+        border-radius: 8px; padding: 7px 9px;
+        max-height: 150px; overflow-y: auto;
+        margin-bottom: 10px;
+      }
+      .act-log .ev-tag { color: var(--accent2); }
+
+      /* Report */
+      .report-body {
+        font-size: 14px; line-height: 1.7;
+      }
+      .report-body h1 { font-size: 19px; margin-bottom: 8px; }
+      .report-body h2 { font-size: 16px; margin: 18px 0 6px; }
+      .report-body h3 { font-size: 14px; margin: 14px 0 4px; }
+      .report-body p  { margin: 6px 0; }
+      .report-body ul, .report-body ol { margin: 6px 0 6px 18px; }
+      .report-body li { margin: 2px 0; }
+      .report-body a  { color: var(--accent2); }
+      .report-body code {
+        background: var(--panel2); padding: 1px 5px;
+        border-radius: 4px; font: 12px var(--mono);
+      }
+      .report-body pre {
+        background: var(--panel2); padding: 11px 13px;
+        border-radius: 8px; overflow-x: auto; margin: 8px 0;
+      }
+      .report-body pre code { background: none; padding: 0; }
+      .report-body blockquote {
+        border-left: 3px solid var(--line); padding-left: 12px;
+        color: var(--muted); margin: 6px 0;
+      }
+      .report-body hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0; }
+
+      /* Report footer */
+      .report-footer {
+        margin-top: 12px; padding-top: 10px;
+        border-top: 1px solid var(--line);
+        display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+      }
+      .cost-tag { font: 11px var(--mono); color: var(--muted); }
+      .cost-tag b { color: var(--accent); }
+      .dl-link {
+        font: 11px var(--mono); color: var(--accent2);
+        text-decoration: none;
+      }
+      .dl-link:hover { text-decoration: underline; }
+      .artifact-hdr {
+        font: 10px var(--mono); text-transform: uppercase;
+        letter-spacing: .6px; color: var(--muted); margin: 10px 0 3px;
+      }
+      .artifact-row { font: 11px/1.7 var(--mono); }
+      .artifact-row a { color: var(--accent2); text-decoration: none; }
+
+      /* ── Empty state ─────────────────────────────────── */
+      .empty-state {
+        display: flex; flex-direction: column;
+        align-items: center; justify-content: center;
+        height: 100%; gap: 10px;
+        color: var(--muted); text-align: center; padding: 40px;
+      }
+      .empty-state .emo { font-size: 40px; line-height: 1; }
+      .empty-state h2 { font-size: 17px; color: var(--fg); font-weight: 600; }
+      .empty-state p  { font-size: 13px; max-width: 340px; line-height: 1.55; }
+
+      /* ── Input area ──────────────────────────────────── */
+      .chat-input-wrap {
+        flex: none;
+        background: var(--panel);
+        border-top: 1px solid var(--line);
+        padding: 10px 18px 14px;
+      }
+      .chat-input-inner { max-width: 720px; margin: 0 auto; }
+      .input-shell {
+        background: var(--panel2);
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        display: flex; align-items: flex-end; gap: 8px;
+        padding: 8px 10px;
+        transition: border-color .15s;
+      }
+      .input-shell:focus-within { border-color: #3d4555; }
+      .input-shell textarea {
+        flex: 1; background: none; border: none; outline: none;
+        color: var(--fg); resize: none; min-height: 22px; max-height: 170px;
+        font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+        overflow-y: auto;
+      }
+      .input-shell textarea::placeholder { color: var(--muted); }
+      .send-btn {
+        background: var(--accent); color: #1a1205;
+        border: none; border-radius: 7px;
+        width: 34px; height: 34px; flex: none; align-self: flex-end;
+        cursor: pointer; font-size: 17px; line-height: 1;
+        display: flex; align-items: center; justify-content: center;
+        transition: opacity .15s;
+      }
+      .send-btn:disabled { opacity: .35; cursor: not-allowed; }
+      .input-opts {
+        display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+        margin-top: 7px; font-size: 12px; color: var(--muted);
+      }
+      .input-opts label {
+        display: flex; align-items: center; gap: 5px; cursor: pointer;
+      }
+      .input-opts select {
+        background: var(--panel2); color: var(--fg);
+        border: 1px solid var(--line); border-radius: 5px;
+        padding: 2px 5px; font: 12px inherit;
+      }
+      .input-opts input[type="file"] { font-size: 11px; color: var(--muted); }
+      .model-hint { font: 11px var(--mono); color: var(--muted); margin-left: auto; }
+      .input-err { color: var(--bad); font-size: 12px; margin-top: 5px; }
+
+      /* ── Login overlay ───────────────────────────────── */
+      .overlay {
+        position: fixed; inset: 0;
+        background: rgba(6,7,10,.9);
+        display: flex; align-items: center; justify-content: center;
+        z-index: 50;
+      }
+      .login-card {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 14px; padding: 24px;
+        width: min(360px, 93vw);
+      }
+      .login-card h2 {
+        font-size: 13px; text-transform: uppercase;
+        letter-spacing: .7px; color: var(--muted); margin-bottom: 12px;
+      }
+      .login-card p { font-size: 13px; color: var(--muted); margin-bottom: 14px; }
+      .lrow { display: flex; gap: 8px; align-items: center; }
+      .lrow input[type="password"] {
+        flex: 1; background: var(--panel2); color: var(--fg);
+        border: 1px solid var(--line); border-radius: 8px;
+        padding: 9px 11px; font: 14px inherit; outline: none;
+      }
+      .lrow input[type="password"]:focus { border-color: #3d4555; }
+      .lbtn {
+        background: var(--accent); color: #1a1205;
+        border: none; border-radius: 8px;
+        padding: 9px 15px; font: 600 13px system-ui; cursor: pointer;
+      }
+      .lerr { color: var(--bad); font-size: 12px; margin-top: 8px; }
       .hidden { display: none !important; }
-      .err { color: var(--bad); font-size: 13px; margin-top: 8px; }
-      .cost { font: 12px var(--mono); color: var(--muted); }
-      .cost b { color: var(--accent); }
-      .sources { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin-top: 10px; font-size: 13px; color: var(--muted); }
-      .sources .chk { display: flex; align-items: center; gap: 6px; }
-      .sources select, .sources input[type="file"] { background: var(--panel2); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 5px; font: inherit; max-width: 220px; }
-      .dl { font: 12px var(--mono); text-transform: none; letter-spacing: 0; }
-      .dl a { color: var(--accent2); text-decoration: none; margin-left: 12px; }
-      .dl a:hover { text-decoration: underline; }
-      #artifacts { margin-top: 14px; }
-      #artifacts .file { font: 12px/1.8 var(--mono); }
-      #artifacts .file a { color: var(--accent2); text-decoration: none; }
-      #artifacts .hdr { color: var(--muted); text-transform: uppercase; font-size: 11px; letter-spacing: 0.6px; }
+
+      /* Scrollbars */
+      ::-webkit-scrollbar { width: 4px; height: 4px; }
+      ::-webkit-scrollbar-track { background: transparent; }
+      ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+
+      /* Responsive: hide sidebar on narrow screens */
+      @media (max-width: 600px) {
+        .sidebar { display: none; }
+      }
     </style>
   </head>
   <body>
-    <div id="login" class="overlay">
-      <div class="card">
+
+    <!-- Login overlay -->
+    <div id="loginOverlay" class="overlay">
+      <div class="login-card">
         <h2>Sign in</h2>
-        <p style="color: var(--muted); font-size: 13px; margin-top: 0;">
-          Enter the shared access token (<code>APP_TOKEN</code>).
-        </p>
-        <div class="row">
-          <input id="token" type="password" placeholder="APP_TOKEN" autocomplete="current-password" />
-          <button id="loginBtn">Enter</button>
+        <p>Enter the shared access token (<code>APP_TOKEN</code>).</p>
+        <div class="lrow">
+          <input id="tokenInput" type="password" placeholder="APP_TOKEN" autocomplete="current-password" />
+          <button class="lbtn" id="loginBtn">Enter</button>
         </div>
-        <div id="loginErr" class="err hidden">Wrong token.</div>
+        <div id="loginErr" class="lerr hidden">Wrong token — try again.</div>
       </div>
     </div>
 
-    <header>
-      <h1>🔬 Research Assistant</h1>
+    <!-- Header -->
+    <header class="app-header">
+      <span class="logo">🔬 Research Assistant</span>
       <span class="spacer"></span>
       <span id="authBadge" class="badge"></span>
-      <button id="logoutBtn" class="secondary" style="padding: 6px 10px;">Sign out</button>
+      <button id="logoutBtn" class="hdr-btn">Sign out</button>
     </header>
 
-    <main>
-      <section style="display: grid; gap: 18px;">
-        <div class="card">
-          <h2>New research</h2>
-          <textarea id="goal" placeholder="e.g. Compare the leading open-source vector databases for a small team in 2026 — cost, performance, and operational burden."></textarea>
-          <div class="sources">
-            <label class="chk"><input type="checkbox" id="useWeb" checked /> Search the web</label>
-            <label class="chk hidden" id="wsWrap">Workspace
-              <select id="workspace">
-                <option value="off">off</option>
-                <option value="read">read-only</option>
-                <option value="write">read-write + shell</option>
-              </select>
-            </label>
-            <label class="chk">Files <input type="file" id="files" multiple /></label>
+    <!-- App body -->
+    <div class="app-body">
+
+      <!-- Sidebar -->
+      <aside class="sidebar">
+        <div class="sidebar-top">
+          <button class="new-btn" id="newChatBtn">
+            <span class="icon">＋</span> New research
+          </button>
+        </div>
+        <div class="sidebar-body">
+          <div class="sidebar-section-label">Recent</div>
+          <div id="runList"></div>
+        </div>
+      </aside>
+
+      <!-- Chat column -->
+      <div class="chat-col">
+        <div class="chat-messages" id="chatMessages">
+          <div class="empty-state" id="emptyState">
+            <div class="emo">🔬</div>
+            <h2>Research Assistant</h2>
+            <p>Type a question below and get a multi-source report with fact-checking.</p>
           </div>
-          <div class="row">
-            <button id="startBtn">Start research</button>
-            <span id="modelsHint" class="cost"></span>
-          </div>
-          <div id="startErr" class="err hidden"></div>
         </div>
 
-        <div class="card recent">
-          <h2>Recent runs</h2>
-          <div id="recent"></div>
-        </div>
-      </section>
-
-      <section style="display: grid; gap: 18px;">
-        <div class="card">
-          <h2>Progress <span id="costBadge" class="cost" style="float: right; text-transform: none; letter-spacing: 0;"></span></h2>
-          <div id="stages"></div>
-          <div id="statusline" class="statusline"></div>
-          <div id="plan" style="margin-top: 10px;"></div>
-          <div id="activity" class="activity"></div>
-        </div>
-
-        <div id="reportCard" class="card hidden">
-          <h2>Report <span id="downloads" class="dl" style="float: right;"></span></h2>
-          <div id="report" class="report"></div>
-          <div id="artifacts"></div>
-          <div id="feedbackBlock" style="margin-top: 16px; border-top: 1px solid var(--line); padding-top: 14px;">
-            <div class="sub" style="color: var(--muted); text-transform: uppercase; font-size: 11px; letter-spacing: 0.6px;">Refine / follow up</div>
-            <textarea id="feedback" placeholder="Feedback or a follow-up — e.g. 'go deeper on pricing', or 'the claim about X looks wrong, recheck it'. This re-reads the report above." style="min-height: 70px; margin-top: 8px;"></textarea>
-            <div class="row">
-              <button id="refineBtn" class="secondary">Refine with feedback</button>
-              <span id="refineErr" class="err hidden"></span>
+        <div class="chat-input-wrap">
+          <div class="chat-input-inner">
+            <div class="input-shell">
+              <textarea id="goal" rows="1" placeholder="Ask a research question…"></textarea>
+              <button class="send-btn" id="startBtn" title="Send (Enter)">↑</button>
             </div>
+            <div class="input-opts">
+              <label><input type="checkbox" id="useWeb" checked /> Web search</label>
+              <label id="wsWrap" class="hidden">
+                Workspace
+                <select id="workspace">
+                  <option value="off">off</option>
+                  <option value="read">read-only</option>
+                  <option value="write">read-write</option>
+                </select>
+              </label>
+              <label>Files <input type="file" id="files" multiple /></label>
+              <span id="modelHint" class="model-hint"></span>
+            </div>
+            <div id="startErr" class="input-err hidden"></div>
           </div>
         </div>
-      </section>
-    </main>
+      </div>
+    </div>
 
     <script src="/app.js"></script>
   </body>

@@ -101,24 +101,36 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentResult> {
   let usage: AgentUsage = {};
   let costUsd = 0;
 
-  for await (const message of iterator) {
-    const type = (message as { type?: string }).type;
-    if (type === "assistant") {
-      const am = message as unknown as AssistantMessageView;
-      for (const block of am.message?.content ?? []) {
-        if (block.type === "tool_use") {
-          opts.onActivity?.({
-            tool: block.name ?? "tool",
-            detail: summarizeToolInput(block.name, block.input),
-          });
+  try {
+    for await (const message of iterator) {
+      const type = (message as { type?: string }).type;
+      if (type === "assistant") {
+        const am = message as unknown as AssistantMessageView;
+        for (const block of am.message?.content ?? []) {
+          if (block.type === "tool_use") {
+            opts.onActivity?.({
+              tool: block.name ?? "tool",
+              detail: summarizeToolInput(block.name, block.input),
+            });
+          }
         }
+      } else if (type === "result") {
+        const rm = message as unknown as ResultMessageView;
+        subtype = rm.subtype ?? "success";
+        if (typeof rm.result === "string") text = rm.result;
+        usage = rm.usage ?? {};
+        costUsd = typeof rm.total_cost_usd === "number" ? rm.total_cost_usd : 0;
       }
-    } else if (type === "result") {
-      const rm = message as unknown as ResultMessageView;
-      subtype = rm.subtype ?? "success";
-      if (typeof rm.result === "string") text = rm.result;
-      usage = rm.usage ?? {};
-      costUsd = typeof rm.total_cost_usd === "number" ? rm.total_cost_usd : 0;
+    }
+  } catch (err) {
+    // The SDK throws when maxTurns is exhausted rather than emitting a result.
+    // Treat this as a soft max_turns result so the pipeline can continue with
+    // whatever partial text was accumulated before the limit was hit.
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/max.{0,30}turn|turn.{0,30}max/i.test(msg)) {
+      subtype = "max_turns";
+    } else {
+      throw err;
     }
   }
 
