@@ -91,6 +91,16 @@
       .err { color: var(--bad); font-size: 13px; margin-top: 8px; }
       .cost { font: 12px var(--mono); color: var(--muted); }
       .cost b { color: var(--accent); }
+      .sources { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; margin-top: 10px; font-size: 13px; color: var(--muted); }
+      .sources .chk { display: flex; align-items: center; gap: 6px; }
+      .sources select, .sources input[type="file"] { background: var(--panel2); color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 5px; font: inherit; max-width: 220px; }
+      .dl { font: 12px var(--mono); text-transform: none; letter-spacing: 0; }
+      .dl a { color: var(--accent2); text-decoration: none; margin-left: 12px; }
+      .dl a:hover { text-decoration: underline; }
+      #artifacts { margin-top: 14px; }
+      #artifacts .file { font: 12px/1.8 var(--mono); }
+      #artifacts .file a { color: var(--accent2); text-decoration: none; }
+      #artifacts .hdr { color: var(--muted); text-transform: uppercase; font-size: 11px; letter-spacing: 0.6px; }
     </style>
   </head>
   <body>
@@ -120,6 +130,17 @@
         <div class="card">
           <h2>New research</h2>
           <textarea id="goal" placeholder="e.g. Compare the leading open-source vector databases for a small team in 2026 — cost, performance, and operational burden."></textarea>
+          <div class="sources">
+            <label class="chk"><input type="checkbox" id="useWeb" checked /> Search the web</label>
+            <label class="chk hidden" id="wsWrap">Workspace
+              <select id="workspace">
+                <option value="off">off</option>
+                <option value="read">read-only</option>
+                <option value="write">read-write + shell</option>
+              </select>
+            </label>
+            <label class="chk">Files <input type="file" id="files" multiple /></label>
+          </div>
           <div class="row">
             <button id="startBtn">Start research</button>
             <span id="modelsHint" class="cost"></span>
@@ -143,8 +164,9 @@
         </div>
 
         <div id="reportCard" class="card hidden">
-          <h2>Report</h2>
+          <h2>Report <span id="downloads" class="dl" style="float: right;"></span></h2>
           <div id="report" class="report"></div>
+          <div id="artifacts"></div>
         </div>
       </section>
     </main>

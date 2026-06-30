@@ -5,11 +5,23 @@
 //   1. plan        (Opus)        -> N subtopics + success criteria
 //   2. research    (Sonnet x N)  -> per-subtopic findings with sources  [parallel]
 //   3. evaluate    (Opus)        -> coverage check, optional 2nd round, key claims
-//   4. fact-check  (Sonnet x M)  -> verify key claims against the web    [parallel]
+//   4. fact-check  (Sonnet x M)  -> verify key claims                    [parallel]
 //   5. synthesize  (Opus)        -> final cited report + confidence notes
+//
+// Sources are per-run: the web (WebSearch/WebFetch), a mounted workspace
+// (/workspace, read-only or read-write+shell), and/or uploaded files.
 
-import { addUsage, runAgent, WEB_TOOLS, type AgentResult, type AgentUsage } from "./agents.js";
+import {
+  addUsage,
+  runAgent,
+  READ_TOOLS,
+  WEB_TOOLS,
+  WRITE_TOOLS,
+  type AgentResult,
+  type AgentUsage,
+} from "./agents.js";
 import { config } from "./config.js";
+import { WORKSPACE_PATH, dirTree, listUploads, outputsDir, uploadsDir } from "./store.js";
 import { clamp, extractJson, mapLimit } from "./util.js";
 
 export type Stage = "plan" | "research" | "evaluate" | "factcheck" | "synthesize";
@@ -24,6 +36,12 @@ export interface FactCheck {
   verdict: "supported" | "unsupported" | "mixed" | "unclear";
   note: string;
   sources: string[];
+}
+
+export interface RunOptions {
+  useWeb: boolean;
+  workspace: "off" | "read" | "write";
+  uploadCount: number;
 }
 
 export type PipelineEvent =
@@ -51,6 +69,7 @@ export interface RunRecord {
   createdAt: string;
   finishedAt?: string;
   authMode: string;
+  options: RunOptions;
   subtopics: Subtopic[];
   factChecks: FactCheck[];
   reportMarkdown?: string;
@@ -76,6 +95,69 @@ function accrue(record: RunRecord, res: AgentResult, emit: Emit): void {
   });
 }
 
+// Source context derived from the run options — drives tools, cwd, and prompts.
+interface SourceCtx {
+  researchTools: string[];
+  factTools: string[];
+  cwd?: string;
+  localContext: string; // appended to research/fact-check prompts
+  sourcesGuidance: string;
+  citationHint: string;
+}
+
+function buildSourceCtx(record: RunRecord): SourceCtx {
+  const opt = record.options;
+  const workspaceOn = opt.workspace !== "off";
+  const writable = opt.workspace === "write";
+  const hasUploads = opt.uploadCount > 0;
+  const hasLocal = workspaceOn || hasUploads;
+  const upDir = uploadsDir(record.id);
+  const outDir = outputsDir(record.id);
+
+  const researchTools: string[] = [];
+  const factTools: string[] = [];
+  if (opt.useWeb) {
+    researchTools.push(...WEB_TOOLS);
+    factTools.push(...WEB_TOOLS);
+  }
+  if (hasLocal) {
+    researchTools.push(...READ_TOOLS);
+    factTools.push(...READ_TOOLS);
+  }
+  if (writable) researchTools.push(...WRITE_TOOLS);
+
+  const localBits: string[] = [];
+  if (workspaceOn) {
+    localBits.push(
+      `- A mounted workspace at ${WORKSPACE_PATH} (${writable ? "read-write — you may create/edit files and run shell commands here" : "read-only"}). Use Read/Grep/Glob to explore it.`,
+    );
+  }
+  if (hasUploads) localBits.push(`- Uploaded files in ${upDir} (read-only). Use Read/Grep/Glob.`);
+  if (writable) localBits.push(`- Save any files you generate for the user to ${outDir}.`);
+  const localContext = localBits.length ? `\nLocal sources available to you:\n${localBits.join("\n")}\n` : "";
+
+  let sourcesGuidance: string;
+  if (opt.useWeb && hasLocal) sourcesGuidance = "Use web search/fetch AND the local sources listed below.";
+  else if (opt.useWeb) sourcesGuidance = "Use web search and fetch.";
+  else if (hasLocal) sourcesGuidance = "Use ONLY the local sources listed below — do not use the web.";
+  else sourcesGuidance = "Use web search and fetch.";
+
+  const citationHint = opt.useWeb && hasLocal
+    ? "cite each finding with its source (a URL for web findings, or the file path for local ones)"
+    : hasLocal && !opt.useWeb
+      ? "cite each finding with its file path"
+      : "cite each finding with its source URL";
+
+  return {
+    researchTools,
+    factTools,
+    cwd: workspaceOn ? WORKSPACE_PATH : hasUploads ? upDir : undefined,
+    localContext,
+    sourcesGuidance,
+    citationHint,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Stage 1 — plan
 // ---------------------------------------------------------------------------
@@ -86,13 +168,17 @@ const PLAN_SYSTEM =
   "Each subtopic is handed to a separate worker with NO other context, so make each one self-contained and framed as a precise question. " +
   "Respond with JSON only — no prose, no code fences.";
 
-async function planStage(goal: string, fanout: number): Promise<{ subtopics: Subtopic[]; successCriteria: string[]; raw: AgentResult }> {
+async function planStage(
+  goal: string,
+  fanout: number,
+  localListing: string,
+): Promise<{ subtopics: Subtopic[]; successCriteria: string[]; raw: AgentResult }> {
   const raw = await runAgent({
     model: config.models.plan,
     systemPrompt: PLAN_SYSTEM,
     maxTurns: 2,
     prompt:
-      `Research goal:\n${goal}\n\n` +
+      `Research goal:\n${goal}\n${localListing}\n` +
       `Produce exactly ${fanout} subtopics. Do not use any tools.\n` +
       `JSON shape:\n` +
       `{"subtopics":[{"title":"short label","question":"precise self-contained question"}],` +
@@ -105,11 +191,8 @@ async function planStage(goal: string, fanout: number): Promise<{ subtopics: Sub
     .filter((s) => s && typeof s.question === "string" && s.question.trim())
     .slice(0, fanout)
     .map((s) => ({ title: String(s.title ?? s.question).slice(0, 120), question: String(s.question) }));
+  if (subtopics.length === 0) subtopics = [{ title: "Direct investigation", question: goal }];
 
-  // Fallback: if the planner produced nothing parseable, research the goal directly.
-  if (subtopics.length === 0) {
-    subtopics = [{ title: "Direct investigation", question: goal }];
-  }
   const successCriteria = Array.isArray(parsed?.successCriteria)
     ? parsed!.successCriteria.map(String).slice(0, 10)
     : [];
@@ -121,29 +204,32 @@ async function planStage(goal: string, fanout: number): Promise<{ subtopics: Sub
 // ---------------------------------------------------------------------------
 
 const RESEARCH_SYSTEM =
-  "You are a research worker investigating ONE subtopic. Use web search and fetch to gather facts. " +
-  "Prefer primary and authoritative sources, note publication dates, and flag where sources disagree. " +
-  "Be concise and factual. Every nontrivial claim must cite a real source URL — never invent URLs.";
+  "You are a research worker investigating ONE subtopic. Gather facts from the sources you are given. " +
+  "Prefer primary and authoritative sources, note dates, and flag where sources disagree. " +
+  "Be concise and factual. Every nontrivial claim must cite a real source — never invent sources.";
 
 async function researchWorker(
   goal: string,
   sub: Subtopic,
   index: number,
+  ctx: SourceCtx,
   emit: Emit,
 ): Promise<{ text: string; res: AgentResult }> {
   emit({ type: "worker", ts: now(), stage: "research", index, label: sub.title, state: "start" });
   const res = await runAgent({
     model: config.models.research,
     systemPrompt: RESEARCH_SYSTEM,
-    allowedTools: [...WEB_TOOLS],
+    allowedTools: ctx.researchTools,
+    cwd: ctx.cwd,
     maxTurns: clamp(config.researchMaxTurns, 2, 20),
     prompt:
       `Overall goal (for context only):\n${goal}\n\n` +
       `Your subtopic: ${sub.title}\nQuestion: ${sub.question}\n\n` +
-      `Run a few web searches, fetch the best sources, then write a findings brief in markdown:\n` +
-      `- 3 to 8 bullet points of concrete findings, each ending with its source URL in parentheses\n` +
-      `- then a "Sources:" line listing the URLs you actually used\n` +
-      `Do not fabricate URLs. If evidence is thin or conflicting, say so.`,
+      `${ctx.sourcesGuidance}${ctx.localContext}\n` +
+      `Then write a findings brief in markdown:\n` +
+      `- 3 to 8 bullet points of concrete findings, each ${ctx.citationHint}\n` +
+      `- then a "Sources:" line listing what you used\n` +
+      `Do not fabricate sources. If evidence is thin or conflicting, say so.`,
     onActivity: (a) =>
       emit({
         type: "worker",
@@ -206,7 +292,7 @@ async function evaluateStage(
       `"gaps":["short description"],` +
       `"followups":[{"title":"...","question":"..."}],` +
       `"keyClaims":["a specific, checkable factual claim drawn from the findings"]}\n` +
-      `Include followups ONLY for important gaps worth another search round` +
+      `Include followups ONLY for important gaps worth another round` +
       `${allowFollowups ? ` (at most ${fanout})` : ` — but return [] for followups now`}. ` +
       `Return at most 6 keyClaims.`,
   });
@@ -234,22 +320,29 @@ async function evaluateStage(
 // ---------------------------------------------------------------------------
 
 const FACTCHECK_SYSTEM =
-  "You are a fact-checker verifying a single factual claim against independent web sources. " +
+  "You are a fact-checker verifying a single factual claim against independent sources. " +
   "Be skeptical: do not trust the claim's own phrasing — find corroborating or contradicting evidence. " +
   "Respond with JSON only — no prose, no code fences.";
 
-async function factCheckWorker(claim: string, index: number, emit: Emit): Promise<{ fc: FactCheck; res: AgentResult }> {
+async function factCheckWorker(
+  claim: string,
+  index: number,
+  ctx: SourceCtx,
+  emit: Emit,
+): Promise<{ fc: FactCheck; res: AgentResult }> {
   const label = claim.slice(0, 80);
   emit({ type: "worker", ts: now(), stage: "factcheck", index, label, state: "start" });
   const res = await runAgent({
     model: config.models.factcheck,
     systemPrompt: FACTCHECK_SYSTEM,
-    allowedTools: [...WEB_TOOLS],
+    allowedTools: ctx.factTools,
+    cwd: ctx.cwd,
     maxTurns: clamp(config.factcheckMaxTurns, 2, 20),
     prompt:
       `Claim to verify:\n"${claim}"\n\n` +
-      `Use web search/fetch to check it against independent sources. JSON shape:\n` +
-      `{"verdict":"supported|unsupported|mixed|unclear","note":"one-sentence justification","sources":["url"]}`,
+      `${ctx.sourcesGuidance}${ctx.localContext}\n` +
+      `JSON shape:\n` +
+      `{"verdict":"supported|unsupported|mixed|unclear","note":"one-sentence justification","sources":["url or file path"]}`,
     onActivity: (a) =>
       emit({
         type: "worker",
@@ -282,13 +375,9 @@ async function factCheckWorker(claim: string, index: number, emit: Emit): Promis
 
 const SYNTH_SYSTEM =
   "You are the lead researcher writing the final report. Use ONLY the provided findings and fact-check results — " +
-  "do not introduce new facts or URLs. Lead with the answer; write for a smart reader who wants the conclusion first.";
+  "do not introduce new facts or sources. Lead with the answer; write for a smart reader who wants the conclusion first.";
 
-async function synthesizeStage(
-  goal: string,
-  findings: string,
-  factChecks: FactCheck[],
-): Promise<AgentResult> {
+async function synthesizeStage(goal: string, findings: string, factChecks: FactCheck[]): Promise<AgentResult> {
   const fcText = factChecks.length
     ? factChecks.map((f) => `- [${f.verdict}] ${f.claim}${f.note ? ` — ${f.note}` : ""}`).join("\n")
     : "(no claims were fact-checked)";
@@ -300,8 +389,8 @@ async function synthesizeStage(
       `Goal:\n${goal}\n\nFindings:\n${findings}\n\nFact-check results:\n${fcText}\n\n` +
       `Do not use tools. Write a markdown report with:\n` +
       `1. A short, direct answer to the goal up front.\n` +
-      `2. Organized sections covering the findings, with inline source links.\n` +
-      `3. A "Sources" list of the URLs referenced.\n` +
+      `2. Organized sections covering the findings, with inline source links/paths.\n` +
+      `3. A "Sources" list of what was referenced.\n` +
       `4. A final "Confidence & caveats" section that explicitly flags anything fact-checking marked ` +
       `unsupported, mixed, or unclear, and any gaps still open.`,
   });
@@ -315,12 +404,23 @@ export async function runPipeline(record: RunRecord, emit: Emit): Promise<void> 
   const goal = record.goal;
   const fanout = clamp(config.fanoutWidth, 1, 12);
   const maxRounds = clamp(config.maxRounds, 1, 4);
+  const ctx = buildSourceCtx(record);
 
   try {
-    // 1. Plan
+    // 1. Plan (with a local file listing when local sources are in play)
     emit({ type: "stage", ts: now(), stage: "plan", state: "start" });
     emit({ type: "status", ts: now(), stage: "plan", message: `Planning ${fanout} research angles with ${config.models.plan}…` });
-    const plan = await planStage(goal, fanout);
+
+    let localListing = "";
+    if (record.options.workspace !== "off") {
+      localListing += `\nWorkspace files (${WORKSPACE_PATH}):\n${await dirTree(WORKSPACE_PATH)}\n`;
+    }
+    if (record.options.uploadCount > 0) {
+      const ups = await listUploads(record.id);
+      localListing += `\nUploaded files (${uploadsDir(record.id)}):\n${ups.join("\n") || "(none)"}\n`;
+    }
+
+    const plan = await planStage(goal, fanout, localListing);
     accrue(record, plan.raw, emit);
     record.subtopics = plan.subtopics;
     emit({ type: "plan", ts: now(), subtopics: plan.subtopics, successCriteria: plan.successCriteria });
@@ -341,7 +441,7 @@ export async function runPipeline(record: RunRecord, emit: Emit): Promise<void> 
         message: `Round ${round}: ${toResearch.length} ${config.models.research} workers (≤${config.workerConcurrency} in parallel)…`,
       });
       const subs = toResearch;
-      const results = await mapLimit(subs, config.workerConcurrency, (sub, i) => researchWorker(goal, sub, i, emit));
+      const results = await mapLimit(subs, config.workerConcurrency, (sub, i) => researchWorker(goal, sub, i, ctx, emit));
       results.forEach((r, i) => {
         accrue(record, r.res, emit);
         collected.push({ sub: subs[i] as Subtopic, text: r.text });
@@ -380,7 +480,7 @@ export async function runPipeline(record: RunRecord, emit: Emit): Promise<void> 
         message: `Verifying ${evalResult.keyClaims.length} claims with ${config.models.factcheck}…`,
       });
       const checks = await mapLimit(evalResult.keyClaims, config.workerConcurrency, (claim, i) =>
-        factCheckWorker(claim, i, emit),
+        factCheckWorker(claim, i, ctx, emit),
       );
       checks.forEach((c) => {
         accrue(record, c.res, emit);

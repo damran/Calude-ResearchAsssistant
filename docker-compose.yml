@@ -3,11 +3,16 @@ services:
     build: .
     container_name: research-assistant
     env_file: .env
+    environment:
+      - WORKSPACE_PATH=/workspace
     ports:
       # host:container — both driven by PORT in .env (default 8787)
       - "${PORT:-8787}:${PORT:-8787}"
     volumes:
       - ra-data:/app/data
+      # Mount a host/WSL folder the agents can read (and, in read-write mode, modify).
+      # Point WORKSPACE_DIR at any path in .env, e.g. C:\Users\you\docs or /mnt/c/...
+      - "${WORKSPACE_DIR:-./workspace}:/workspace"
     restart: unless-stopped
 
 volumes:

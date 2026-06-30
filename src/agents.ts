@@ -8,9 +8,11 @@
 
 import { query } from "@anthropic-ai/claude-agent-sdk";
 
-// Built-in Claude Code tool names. Research/fact-check agents get only these;
-// planning/synthesis agents get none (pure reasoning).
+// Built-in Claude Code tool names, grouped by capability. We assemble each
+// stage's allowedTools from these based on the run's sources.
 export const WEB_TOOLS = ["WebSearch", "WebFetch"] as const;
+export const READ_TOOLS = ["Read", "Grep", "Glob"] as const; // read local files
+export const WRITE_TOOLS = ["Write", "Edit", "Bash"] as const; // mutate + run shell
 export const NO_TOOLS: string[] = [];
 
 export interface AgentUsage {
@@ -40,6 +42,8 @@ export interface RunAgentOptions {
   prompt: string;
   allowedTools?: string[];
   maxTurns?: number;
+  /** Working directory for filesystem/bash tools (workspace or uploads dir). */
+  cwd?: string;
   /** Called whenever the agent invokes a tool — used for live progress. */
   onActivity?: (a: ToolActivity) => void;
 }
@@ -88,6 +92,7 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentResult> {
       // hermetic and reproducible inside the container.
       settingSources: [],
       maxTurns: opts.maxTurns ?? 6,
+      ...(opts.cwd ? { cwd: opts.cwd } : {}),
     },
   });
 

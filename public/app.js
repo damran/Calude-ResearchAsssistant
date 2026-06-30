@@ -12,6 +12,7 @@ const STAGES = [
 ];
 
 let currentEs = null;
+let currentRunId = null;
 
 // ---- auth -----------------------------------------------------------------
 
@@ -52,6 +53,8 @@ function renderConfig(cfg) {
   $("authBadge").innerHTML = `auth: <b>${mode}</b>`;
   const m = cfg.models || {};
   $("modelsHint").textContent = `plan ${m.plan} · research ${m.research} · check ${m.factcheck} · synth ${m.synth} · fan-out ${cfg.fanoutWidth}`;
+  // Only offer the workspace control if a workspace is actually mounted.
+  $("wsWrap").classList.toggle("hidden", !cfg.workspaceAvailable);
 }
 
 // ---- progress UI ----------------------------------------------------------
@@ -86,6 +89,40 @@ function resetProgress() {
   $("report").innerHTML = "";
   $("reportCard").classList.add("hidden");
   $("costBadge").textContent = "";
+  $("downloads").innerHTML = "";
+  $("artifacts").innerHTML = "";
+}
+
+function renderDownloads(id) {
+  if (!id) return;
+  const t = encodeURIComponent(getToken());
+  $("downloads").innerHTML =
+    `<a href="/research/${id}/report.md?token=${t}" download>↓ .md</a>` +
+    `<a href="/research/${id}/report.json?token=${t}" download>↓ .json</a>`;
+}
+
+async function renderArtifacts(id) {
+  if (!id) return;
+  try {
+    const res = await authedFetch(`/research/${id}/files`);
+    if (!res.ok) return;
+    const { files } = await res.json();
+    if (!files || !files.length) {
+      $("artifacts").innerHTML = "";
+      return;
+    }
+    const t = encodeURIComponent(getToken());
+    $("artifacts").innerHTML =
+      `<div class="hdr">Generated files</div>` +
+      files
+        .map(
+          (f) =>
+            `<div class="file"><a href="/research/${id}/files/${encodeURIComponent(f.name)}?token=${t}" download>↓ ${escapeHtml(f.name)}</a> <span style="color:var(--muted)">(${f.size} bytes)</span></div>`,
+        )
+        .join("");
+  } catch {
+    /* ignore */
+  }
 }
 
 function logActivity(html) {
@@ -133,6 +170,7 @@ function handleEvent(ev, es) {
     case "report":
       $("report").innerHTML = mdToHtml(ev.markdown || "");
       $("reportCard").classList.remove("hidden");
+      renderDownloads(currentRunId);
       break;
     case "error":
       $("statusline").innerHTML = `<span style="color:var(--bad)">Error: ${escapeHtml(ev.message || "unknown")}</span>`;
@@ -145,6 +183,7 @@ function handleEvent(ev, es) {
     case "done":
       $("startBtn").disabled = false;
       if (es) es.close();
+      renderArtifacts(currentRunId);
       refreshRecent();
       break;
   }
@@ -154,6 +193,7 @@ function handleEvent(ev, es) {
 
 function connectStream(id) {
   if (currentEs) currentEs.close();
+  currentRunId = id;
   resetProgress();
   const es = new EventSource(`/research/${encodeURIComponent(id)}/stream?token=${encodeURIComponent(getToken())}`);
   es.onopen = () => resetProgress(); // server replays the full log on each (re)connect
@@ -182,11 +222,13 @@ async function startResearch() {
   }
   $("startBtn").disabled = true;
   try {
-    const res = await authedFetch("/research", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ goal }),
-    });
+    const fd = new FormData();
+    fd.append("goal", goal);
+    fd.append("useWeb", $("useWeb").checked ? "true" : "false");
+    fd.append("workspace", $("wsWrap").classList.contains("hidden") ? "off" : $("workspace").value);
+    for (const f of $("files").files) fd.append("files", f);
+    // Note: no Content-Type header — the browser sets the multipart boundary.
+    const res = await authedFetch("/research", { method: "POST", body: fd });
     if (res.status === 401) {
       clearToken();
       return showLogin(true);

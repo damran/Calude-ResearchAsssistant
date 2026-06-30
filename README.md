@@ -26,6 +26,23 @@ Progress streams live to a simple web UI over SSE; reports are saved to disk.
 
 ---
 
+## Sources & outputs
+
+Each run chooses its sources in the UI (you can combine them):
+
+- **Web** (default) — `WebSearch` / `WebFetch`.
+- **Workspace** — a host/WSL folder mounted at `/workspace`, in one of two modes:
+  - **read-only** — agents `Read`/`Grep`/`Glob` it as a source corpus.
+  - **read-write + shell** — agents may also `Write`/`Edit` files and run `Bash` in it (e.g. process data, generate outputs). ⚠️ see [Security notes](#security-notes).
+- **Uploads** — attach files to a single run; they land in that run's read-only `uploads/` dir.
+
+Point the workspace at any folder with `WORKSPACE_DIR` in `.env`.
+
+**Outputs** — every run's report is downloadable as `.md` / `.json` from the UI. In read-write mode,
+files the agents save to the run's `outputs/` directory show up as downloadable artifacts.
+
+---
+
 ## Prerequisites
 
 - **Docker** (with Compose).
@@ -113,7 +130,8 @@ npm run build && npm start
 | `MAX_ROUNDS` | `2` | Max research rounds (1 = no follow-up; 2 = one targeted follow-up) |
 | `WORKER_CONCURRENCY` | `4` | Max worker agents running at once |
 | `RESEARCH_MAX_TURNS` / `FACTCHECK_MAX_TURNS` | `8` / `6` | Per-agent tool-use budget |
-| `DATA_DIR` | `./data` | Where run records are written |
+| `WORKSPACE_DIR` *(compose)* | `./workspace` | Host/WSL folder mounted at `/workspace` for the agents |
+| `DATA_DIR` | `./data` | Where run records, uploads, and outputs are written |
 
 ---
 
@@ -135,6 +153,12 @@ npm run build && npm start
   the public internet.
 - The OAuth token is your personal subscription credential. It lives only in `.env` (gitignored) and
   the container env — it is never baked into the image. This tool is for **your own** research use.
+- ⚠️ **Read-write + shell workspace** lets the agent modify mounted files and run shell commands
+  *inside the container*, which holds your `CLAUDE_CODE_OAUTH_TOKEN` in its environment. Only enable it
+  on folders and inputs you trust — a malicious local file could attempt prompt injection. Read-only
+  mode and uploads grant no shell and no writes.
+- On **Linux hosts** the container runs as uid 1000 (`node`); for read-write workspace, make sure the
+  mounted folder is writable by that uid. On Windows/macOS Docker Desktop this isn't an issue.
 
 ---
 
